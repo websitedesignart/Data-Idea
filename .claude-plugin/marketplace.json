@@ -8,7 +8,7 @@
       "name": "code-review",
       "source": "./",
       "description": "Reviews diffs, PRs, and file sets for correctness bugs, security issues, and unnecessary complexity in any project.",
-      "version": "1.0.0"
+      "version": "1.0.1"
     }
   ]
 }

@@ -4,6 +4,7 @@ description: Review the current git diff, a specific branch/commit, a PR, or a g
 argument-hint: "[diff|branch|PR#|path]"
 arguments: [target]
 allowed-tools: Read, Grep, Glob, Bash
+context: fork
 agent: code-reviewer
 ---
 
@@ -14,4 +15,4 @@ Determine the review target from `$target`:
 - A branch or commit-ish: run `git diff` against it.
 - A file or directory path: review that path's current content directly (no diff needed).
 
-Hand the resolved diff or file content to the `code-reviewer` agent for analysis. Report its findings to the user exactly as returned — most severe first, each with file:line, summary, failure scenario, and suggested fix. If the target can't be resolved (e.g. no git repo, no changes, invalid PR number), say so instead of guessing at a target.
+Review the resolved diff or file content yourself, following the method in your agent definition. Report your findings most severe first, each with file:line, summary, failure scenario, and suggested fix. If the target can't be resolved (e.g. no git repo, no changes, invalid PR number), say so instead of guessing at a target.
