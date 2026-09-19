@@ -1,42 +1,81 @@
-# Code Review Agent
+# Data-Idea
 
-A Claude Code plugin that reviews diffs, PRs, or file sets for correctness bugs, security issues, and unnecessary complexity. Install it once and use `/review` in any project.
+An evidence-first forensic data-analysis engine for fraud and anomaly detection, driven by
+Claude Code. The idea behind it is IDEA-style audit analytics: every record gets tested, and
+every result can be reproduced. No proprietary IDEA code or algorithms are used.
 
-## What's included
+**The core rule:** Claude never calculates a forensic statistic. Deterministic Python and SQL
+compute everything. Claude chooses which registered test to run, runs it, and explains the
+result. Every result is written to an append-only evidence store with an audit trail.
 
-- **`code-reviewer` agent** — a subagent that reads the actual diff/files, verifies each finding against real code, and classifies issues as CONFIRMED or PLAUSIBLE.
-- **`/review` skill** — resolves a target (uncommitted changes, a branch, a PR number, or a path) and hands it to the `code-reviewer` agent.
+## What it does
 
-## Install into any project
+| Subtest | What it finds | Status |
+|---|---|---|
+| `benford` | Leading-digit distribution vs Benford's Law (Nigrini MAD bands, chi-square) | implemented |
+| `duplicate-analysis` | Duplicate identifiers, and one identifier shared across many distinct values (e.g. one registration number used by many names or establishments) | implemented |
+| `fuzzy-entity-match` | Spelling variants collapsed before counting distinct entities, so identity conflicts aren't inflated by typos | implemented |
+| `cross-dataset-match` | Reconciliation and referential completeness between two datasets | implemented |
+| `gap-sequence`, `round-number`, `outlier`, `split-transaction`, `threshold-proximity`, `vendor-analysis`, `employee-vendor-match`, `duplicate-payment`, `journal-entry`, `date-time-anomaly`, `velocity-analysis` | — | registered, not yet implemented |
+| `custom-test` | Investigator-defined tests. They must be registered before they can run | extension point |
+
+If a subtest isn't implemented, or a required column is missing or the wrong type, the engine
+**refuses** and says exactly why. It never guesses.
+
+## Evidence model
+
+Each case gets its own PostgreSQL database with two schemas:
+
+- `source` — imported data. Every column is stored as TEXT so values are kept exactly as they
+  were. The engine can only read it.
+- `_forensic` — `datasets`, `test_runs`, `findings`, `evidence_links` and `audit_log`. All are
+  append-only except the reviewer fields on `findings`.
+
+Each source table gets a content fingerprint when it's imported. Every finding links to the
+exact source rows behind it. Findings are classified `OBSERVATION` or `ANOMALY` and nothing
+higher: **an anomaly is a structural fact about the data, not evidence of wrongdoing.**
+
+## Setup
+
+Requires Python 3.11+, PostgreSQL 14+ and Node.js (for the MCP servers).
 
 ```
-/plugin marketplace add websitedesignart/Data-Idea
-/plugin install code-review@data-idea
+python -m venv .venv
+.venv\Scripts\pip install -r requirements.txt
+copy .mcp.json.example .mcp.json        # then set your own postgres password
 ```
 
-Then, in any project:
+Then set up a case:
 
 ```
-/review
-/review 123          # review PR #123 (uses gh CLI if available)
-/review main          # diff against the main branch
-/review src/utils.py  # review a file directly
+.venv\Scripts\python.exe forensic_platform\scripts\create_case_db.py --database my_case_db
+.venv\Scripts\python.exe forensic_platform\ingestion\excel_ingest.py --source "path\to\data.xlsx" --database my_case_db
+.venv\Scripts\python.exe forensic_platform\scripts\bootstrap.py --database my_case_db --grant-schema source
 ```
 
-## Local development
+Restart Claude Code so it picks up the new MCP entries. After that, ask for a forensic test in
+plain language and the `forensic-test-engine` skill will send it to
+`forensic_platform/scripts/run_test.py`.
+
+## Verifying the engine
 
 ```
-claude --plugin-dir /path/to/Data-Idea
+.venv\Scripts\python.exe forensic_platform\tests_engine\test_fuzzy_entity_match.py
+.venv\Scripts\python.exe forensic_platform\fixtures\synthetic_seed.py --database my_case_db
 ```
 
-## Structure
+The fixture builds a column that follows Benford's Law and one that deliberately doesn't. The
+test should pass the first and flag the second.
 
-```
-.claude-plugin/
-  plugin.json        # plugin manifest
-  marketplace.json    # marketplace catalog (this repo is both plugin + marketplace)
-agents/
-  code-reviewer.md    # the review subagent
-skills/
-  review/SKILL.md      # the /review slash command
-```
+## Never commit case data
+
+`.gitignore` blocks credentials (`.mcp.json`), spreadsheets, outputs and case folders. The
+engine is meant to be reused across cases, so the evidence always stays with the case and never
+goes into this repository.
+
+## Known limitations
+
+- Windows-first: the setup commands and the skill use `.venv\Scripts\python.exe`.
+- Credentials still come from `.mcp.json`. Moving them to an OS credential store is planned.
+- Can't be installed as a Claude Code plugin yet. For now, clone the repo and use it as your
+  project.

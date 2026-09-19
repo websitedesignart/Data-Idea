@@ -1,0 +1,137 @@
+version: 1
+tests:
+  benford:
+    status: implemented
+    version: "1.0.0"
+    module: forensic_platform.tests_engine.benford
+    required_fields:
+      - name: column
+        type: numeric
+        description: A single numeric column (amounts, quantities, etc.) with a naturally unconstrained range.
+    algorithm: >
+      First-digit Benford's Law test (Nigrini, 2012): computes the leading-digit
+      distribution of the given column via SQL aggregation, compares it to the
+      theoretical Benford distribution using MAD (Mean Absolute Deviation) and
+      chi-square, and classifies conformity using Nigrini's published MAD bands.
+    limitations: >
+      First-digit test only (no second-order, summation, or distortion-factor
+      tests yet). Not valid for columns with an artificially constrained range
+      (sequential IDs, fixed-price items, assigned account codes). Small sample
+      sizes (under ~300 usable values) produce unreliable MAD/chi-square results
+      per Nigrini's guidance and are flagged rather than scored.
+
+  duplicate-analysis:
+    status: implemented
+    version: "1.0.0"
+    module: forensic_platform.tests_engine.duplicate_analysis
+    required_fields:
+      - name: column
+        type: any
+        description: The identifier column to test (e.g. a certificate or registration number).
+      - name: distinct_of
+        type: any
+        optional: true
+        description: >
+          Optional second column. When supplied the test switches from plain duplicate
+          detection to shared-identifier detection - key values mapping to more than
+          one distinct value of this column.
+    parameters:
+      min_occurrences: 2
+      exclude_placeholders: true
+      evidence_limit: 50000
+    algorithm: >
+      Groups rows by the normalised key column (trim, collapse internal whitespace,
+      uppercase - matching only, source never altered). In duplicate mode, flags keys
+      appearing on at least min_occurrences rows. In shared-identifier mode, flags keys
+      associated with at least min_occurrences distinct values of the second column.
+      Placeholder tokens are optionally excluded from the key space.
+    limitations: >
+      Exact matching after normalisation only - no fuzzy or phonetic matching, so
+      spelling variants of the same name count as distinct values and will inflate
+      shared-identifier counts. Detects internal inconsistency only; it cannot confirm
+      whether any identifier is genuine against an external register. Evidence links are
+      capped at evidence_limit rows per run, and truncation is recorded in limitations.
+      A flagged group is a structural fact about the data, never evidence of wrongdoing.
+  gap-sequence: {status: not_implemented}
+  round-number: {status: not_implemented}
+  outlier: {status: not_implemented}
+  split-transaction: {status: not_implemented}
+  threshold-proximity: {status: not_implemented}
+  vendor-analysis: {status: not_implemented}
+  employee-vendor-match: {status: not_implemented}
+  duplicate-payment: {status: not_implemented}
+  cross-dataset-match:
+    status: implemented
+    version: "1.0.0"
+    module: forensic_platform.tests_engine.cross_dataset_match
+    required_fields:
+      - name: column
+        type: any
+        description: Key column in the left dataset.
+      - name: right_table
+        type: any
+        description: The dataset to reconcile against.
+      - name: right_column
+        type: any
+        description: Key column in the right dataset.
+    parameters:
+      exclude_placeholders: true
+      evidence_limit: 50000
+    algorithm: >
+      Compares the distinct normalised key values of the left dataset against those of
+      the right, reporting keys present in both, only on the left, and only on the right,
+      plus coverage percentages in each direction. Evidence links are written for left
+      rows whose key has no counterpart on the right.
+    limitations: >
+      Exact matching after normalisation - a key differing by formatting or spelling will
+      read as orphaned; pair with fuzzy-entity-match where keys are name-like. Coverage is
+      a statement about these two extracts only: it cannot establish that either extract
+      is complete with respect to the real-world population, which requires an external
+      control total. An orphaned key is a completeness or integrity fact, never in itself
+      evidence of wrongdoing.
+  fuzzy-entity-match:
+    status: implemented
+    version: "1.0.0"
+    module: forensic_platform.tests_engine.fuzzy_entity_match
+    required_fields:
+      - name: column
+        type: any
+        description: Identifier column whose associated names are to be resolved (e.g. reg_no).
+      - name: distinct_of
+        type: any
+        description: The name/entity column whose spelling variants should be collapsed.
+    parameters:
+      min_entities: 2
+      threshold: 0.55
+      exclude_placeholders: true
+      evidence_limit: 50000
+    algorithm: >
+      For each identifier, collapses associated name strings into entity clusters and
+      flags identifiers still resolving to min_entities or more distinct entities after
+      collapsing. Canonicalisation drops honorifics and non-letters and produces two
+      comparison forms - token-sorted (word order irrelevant) and letters-only
+      (spacing irrelevant); similarity is the higher of the padded 3-gram Jaccard
+      overlap of the two forms. Clustering is single-linkage union-find over inputs
+      sorted first, so output is order-independent and byte-reproducible.
+    methodology_citation: >
+      Standard trigram (q-gram) Jaccard similarity with single-linkage agglomerative
+      clustering. Implemented in-repo rather than via a database extension or external
+      library so the matching logic is inspectable and reproducible by a reviewer.
+    limitations: >
+      Threshold-dependent: a different threshold yields different cluster counts, so the
+      threshold is recorded with every run. Initials-only forms ('DR A K BHARGAVA') do not
+      cluster with the expanded name and remain separate entities - verified on a real
+      13-variant group. Genuinely distinct people with near-identical names WILL be merged, so the
+      result is a lower bound on distinct entities, exactly as exact matching is an upper
+      bound. No transliteration or phonetic matching. Detects internal inconsistency only;
+      it cannot confirm identity against an external register.
+  journal-entry: {status: not_implemented}
+  date-time-anomaly: {status: not_implemented}
+  velocity-analysis: {status: not_implemented}
+
+  custom-test:
+    status: extensible
+    description: >
+      Investigator-defined test. Must be added here with an explicit algorithm,
+      required_fields, parameters, and limitations before it can be run — the
+      engine refuses to execute anything not registered.

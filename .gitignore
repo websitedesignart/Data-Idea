@@ -1,0 +1,25 @@
+# Credentials - never commit. Copy .mcp.json.example to .mcp.json and fill in locally.
+.mcp.json
+.env
+*.env
+
+# Local environment
+.venv/
+__pycache__/
+*.pyc
+
+# Case data and case outputs must never enter this repository.
+# The engine is reusable; evidence belongs to the case, not the tool.
+*.xlsx
+*.xls
+*.csv
+*.parquet
+*.json.bak
+output/
+case_*/
+clinical_establishment_registration/
+Focus Audit*/
+Demo Data/
+
+# Project-local instructions may contain machine-specific details and secrets
+CLAUDE.md
