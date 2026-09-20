@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from forensic_platform.core.config import forensic_dsn
 from forensic_platform.core.db import connect
+from forensic_platform.core.identity import NoRowIdentity, resolve_row_identity
 from forensic_platform.tests_engine import base
 from forensic_platform.tests_engine import benford
 from forensic_platform.tests_engine import duplicate_analysis
@@ -28,6 +29,9 @@ from forensic_platform.tests_engine import fuzzy_entity_match
 from forensic_platform.tests_engine import cross_dataset_match
 
 ACTOR = "forensic-test-engine skill"
+
+# Subtests that write record-level evidence, so they need a usable row identity.
+EVIDENCE_SUBTESTS = {"duplicate-analysis", "fuzzy-entity-match", "cross-dataset-match"}
 
 DISPATCH = {
     "benford": benford,
@@ -88,9 +92,7 @@ def _finish_duplicate_analysis(cur, args, entry, module, dataset_id, result) -> 
 
     finding_id = base.record_finding(cur, run_id, classification, desc)
     linked = base.record_evidence_links(
-        cur, finding_id, args.schema, args.table, "_row_no",
-        [row_no for row_no, _ in result.evidence],
-    )
+        cur, finding_id, args.schema, args.table, result.identity, result.evidence)
 
     base.log_audit(cur, ACTOR, f"run:{args.subtest}", dataset_id, __file__, vars(args), "success")
 
@@ -110,6 +112,7 @@ def _finish_duplicate_analysis(cur, args, entry, module, dataset_id, result) -> 
         "max_group_size": result.max_group_size,
         "placeholders_excluded_rows": result.placeholders_excluded_rows,
         "evidence_links_written": linked,
+        "evidence_identity": result.identity.describe(),
         "evidence_truncated": truncated,
         "top_groups": result.top_groups[:15],
         "limitations": limitations,
@@ -165,7 +168,7 @@ def _finish_fuzzy_entity_match(cur, args, entry, module, dataset_id, result) -> 
 
     finding_id = base.record_finding(cur, run_id, classification, desc)
     linked = base.record_evidence_links(
-        cur, finding_id, args.schema, args.table, "_row_no", result.evidence)
+        cur, finding_id, args.schema, args.table, result.identity, result.evidence)
 
     base.log_audit(cur, ACTOR, f"run:{args.subtest}", dataset_id, __file__, vars(args), "success")
 
@@ -185,6 +188,7 @@ def _finish_fuzzy_entity_match(cur, args, entry, module, dataset_id, result) -> 
         "collapsed_by_spelling": result.collapsed_by_spelling,
         "max_entities": result.max_entities,
         "evidence_links_written": linked,
+        "evidence_identity": result.identity.describe(),
         "evidence_truncated": truncated,
         "top_groups": result.top_groups[:15],
         "limitations": limitations,
@@ -232,7 +236,7 @@ def _finish_cross_dataset_match(cur, args, entry, module, dataset_id, result) ->
 
     finding_id = base.record_finding(cur, run_id, classification, desc)
     linked = base.record_evidence_links(
-        cur, finding_id, args.schema, args.table, "_row_no", result.evidence)
+        cur, finding_id, args.schema, args.table, result.identity, result.evidence)
 
     base.log_audit(cur, ACTOR, f"run:{args.subtest}", dataset_id, __file__, vars(args), "success")
 
@@ -251,6 +255,7 @@ def _finish_cross_dataset_match(cur, args, entry, module, dataset_id, result) ->
         "sample_only_left": result.sample_only_left[:10],
         "sample_only_right": result.sample_only_right[:10],
         "evidence_links_written": linked,
+        "evidence_identity": result.identity.describe(),
         "limitations": limitations,
     }, indent=2, default=str))
 
@@ -302,6 +307,21 @@ def main() -> None:
 
     with connect(args.database) as conn:
         cur = conn.cursor()
+
+        identity = None
+        if args.subtest in EVIDENCE_SUBTESTS:
+            try:
+                identity = resolve_row_identity(cur, args.schema, args.table)
+            except NoRowIdentity as exc:
+                # Refused BEFORE dataset registration: a refusal must not leave a permanent
+                # row behind in the append-only `datasets` table.
+                base.log_audit(
+                    cur, ACTOR, f"run:{args.subtest}", None, __file__,
+                    vars(args), "refused", error_text=str(exc),
+                )
+                print(json.dumps({"status": "refused", "reason": f"{exc} Nothing was executed."}))
+                return
+
         dataset_id = base.get_or_register_dataset(cur, args.schema, args.table, ACTOR)
 
         data_type = base.column_info(cur, args.schema, args.table, args.column)
@@ -363,6 +383,7 @@ def main() -> None:
                     right_schema=args.right_schema,
                     exclude_placeholders=not args.include_placeholders,
                     evidence_limit=args.evidence_limit,
+                    identity=identity,
                 )
             elif args.subtest == "fuzzy-entity-match":
                 if not args.distinct_of:
@@ -380,6 +401,7 @@ def main() -> None:
                     exclude_placeholders=not args.include_placeholders,
                     require_digit=args.require_digit,
                     evidence_limit=args.evidence_limit,
+                    identity=identity,
                 )
             elif args.subtest == "duplicate-analysis":
                 result = module.run(
@@ -389,6 +411,7 @@ def main() -> None:
                     exclude_placeholders=not args.include_placeholders,
                     require_digit=args.require_digit,
                     evidence_limit=args.evidence_limit,
+                    identity=identity,
                 )
             else:
                 result = module.run(cur, args.schema, args.table, args.column)

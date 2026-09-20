@@ -19,6 +19,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from psycopg2 import sql
+
+from ..core.identity import RowIdentity, resolve_row_identity
+
 TEST_NAME = "cross-dataset-match"
 TEST_VERSION = "1.0.0"
 
@@ -44,8 +48,9 @@ class CrossMatchResult:
     orphan_left_rows: int
     sample_only_left: list = field(default_factory=list)
     sample_only_right: list = field(default_factory=list)
-    evidence: list = field(default_factory=list)
+    evidence: list = field(default_factory=list)  # tuples of `identity` column values (left table)
     query_text: str = ""
+    identity: RowIdentity | None = None
 
 
 def _norm(col: str) -> str:
@@ -62,7 +67,12 @@ def run(
     right_schema: str | None = None,
     exclude_placeholders: bool = True,
     evidence_limit: int = 50000,
+    identity: RowIdentity | None = None,
 ) -> CrossMatchResult:
+    # Evidence is linked to the LEFT table's rows (the ones with no counterpart), so that
+    # table needs a usable row identity. Resolve first so this fails up front, not after
+    # the reconciliation has already been computed. Raises NoRowIdentity.
+    identity = identity or resolve_row_identity(cur, schema, table)
     rschema = right_schema or schema
     lkey = _norm(f'"{column}"')
     rkey = _norm(f'"{right_column}"')
@@ -108,12 +118,16 @@ def run(
         f'AND {rkey} NOT IN (SELECT k FROM l) ORDER BY 1 LIMIT 25', lp + lp if exclude_placeholders else [])
     sample_right = [r[0] for r in cur.fetchall()]
 
+    pk = identity.select_list()
     cur.execute(
-        f'WITH r AS (SELECT DISTINCT {rkey} k FROM "{rschema}"."{right_table}" WHERE {rfilter})\n'
-        f'SELECT _row_no FROM "{schema}"."{table}" WHERE {lfilter} '
-        f'AND {lkey} NOT IN (SELECT k FROM r) ORDER BY _row_no LIMIT %s',
+        sql.SQL(f'WITH r AS (SELECT DISTINCT {rkey} k FROM "{rschema}"."{right_table}" WHERE {rfilter})\nSELECT ')
+        + pk
+        + sql.SQL(" FROM ") + sql.Identifier(schema, table)
+        + sql.SQL(f" WHERE {lfilter} AND {lkey} NOT IN (SELECT k FROM r) ORDER BY ")
+        + pk
+        + sql.SQL(" LIMIT %s"),
         (lp + lp if exclude_placeholders else []) + [evidence_limit])
-    evidence = [int(r[0]) for r in cur.fetchall()]
+    evidence = [tuple(r) for r in cur.fetchall()]
 
     return CrossMatchResult(
         left=f"{schema}.{table}.{column}",
@@ -132,4 +146,5 @@ def run(
         sample_only_right=sample_right,
         evidence=evidence,
         query_text=query,
+        identity=identity,
     )

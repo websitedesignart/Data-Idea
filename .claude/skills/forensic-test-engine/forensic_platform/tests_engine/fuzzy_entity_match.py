@@ -28,6 +28,10 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+from psycopg2 import sql
+
+from ..core.identity import RowIdentity, resolve_row_identity
+
 TEST_NAME = "fuzzy-entity-match"
 TEST_VERSION = "1.0.0"
 
@@ -53,8 +57,9 @@ class FuzzyResult:
     max_entities: int
     threshold: float
     top_groups: list = field(default_factory=list)
-    evidence: list = field(default_factory=list)
+    evidence: list = field(default_factory=list)  # tuples of `identity` column values
     query_text: str = ""
+    identity: RowIdentity | None = None
 
 
 def _tokens(name: str) -> list[str]:
@@ -141,8 +146,11 @@ def run(
     exclude_placeholders: bool = True,
     require_digit: bool = False,
     evidence_limit: int = 50000,
+    identity: RowIdentity | None = None,
 ) -> FuzzyResult:
     """`column` is the identifier (e.g. reg_no); `distinct_of` is the name column."""
+    # Resolve first so a table with no usable row identity fails up front. Raises NoRowIdentity.
+    identity = identity or resolve_row_identity(cur, schema, table)
     key = _norm_sql(f'"{column}"')
     val = _norm_sql(f'"{distinct_of}"')
 
@@ -190,12 +198,15 @@ def run(
     evidence: list = []
     if flagged:
         keys = [f[0] for f in flagged]
+        pk = identity.select_list()
         cur.execute(
-            f'SELECT _row_no FROM "{schema}"."{table}" WHERE {key} = ANY(%s) '
-            f'ORDER BY _row_no LIMIT %s',
+            sql.SQL("SELECT ") + pk
+            + sql.SQL(" FROM ") + sql.Identifier(schema, table)
+            + sql.SQL(f" WHERE {key} = ANY(%s) ORDER BY ") + pk
+            + sql.SQL(" LIMIT %s"),
             [keys, evidence_limit],
         )
-        evidence = [int(r[0]) for r in cur.fetchall()]
+        evidence = [tuple(r) for r in cur.fetchall()]
 
     return FuzzyResult(
         records_examined=records_examined,
@@ -211,4 +222,5 @@ def run(
         ],
         evidence=evidence,
         query_text=query,
+        identity=identity,
     )

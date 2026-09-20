@@ -55,7 +55,9 @@ Each case gets its own PostgreSQL database with two schemas:
   append-only except the reviewer fields on `findings`.
 
 Each source table gets a content fingerprint when it's imported. Every finding links to the
-exact source rows behind it. Findings are classified `OBSERVATION` or `ANOMALY` and nothing
+exact source rows behind it, identified by the table's declared primary key (composite keys
+work) or, for tables the engine imported, its `_row_no`. A table with neither is **refused**, so
+evidence is never linked to rows by guesswork. Findings are classified `OBSERVATION` or `ANOMALY` and nothing
 higher: **an anomaly is a structural fact about the data, not evidence of wrongdoing.**
 
 ## Setup (once per project)

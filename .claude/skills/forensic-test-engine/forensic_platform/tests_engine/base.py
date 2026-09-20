@@ -123,16 +123,18 @@ def record_evidence_links(
     finding_id: int,
     source_schema: str,
     source_table: str,
-    pk_column: str,
-    pk_values: list,
+    identity,
+    rows: list,
 ) -> int:
     """Link a finding to the specific source records that produced it.
 
     Without this a finding is an unsupported assertion: nobody can get from the
-    conclusion back to the rows. Uses execute_values so large evidence sets are
-    written in one round trip rather than row by row.
+    conclusion back to the rows. `identity` is a core.identity.RowIdentity and each
+    entry of `rows` is a tuple of that identity's column values (one value for a
+    single-column key). Uses execute_values so large evidence sets are written in one
+    round trip rather than row by row.
     """
-    if not pk_values:
+    if not rows:
         return 0
     from psycopg2.extras import execute_values
 
@@ -140,7 +142,7 @@ def record_evidence_links(
         cur,
         "INSERT INTO _forensic.evidence_links "
         "(finding_id, source_schema, source_table, source_pk_column, source_pk_value) VALUES %s",
-        [(finding_id, source_schema, source_table, pk_column, str(v)) for v in pk_values],
+        [(finding_id, source_schema, source_table, *identity.encode(row)) for row in rows],
         page_size=5000,
     )
-    return len(pk_values)
+    return len(rows)

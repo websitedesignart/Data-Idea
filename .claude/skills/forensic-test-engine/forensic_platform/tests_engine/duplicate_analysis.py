@@ -22,6 +22,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from psycopg2 import sql
+
+from ..core.identity import RowIdentity, resolve_row_identity
+
 TEST_NAME = "duplicate-analysis"
 TEST_VERSION = "1.0.0"
 
@@ -41,8 +45,9 @@ class DuplicateResult:
     max_group_size: int
     placeholders_excluded_rows: int
     top_groups: list = field(default_factory=list)
-    evidence: list = field(default_factory=list)
+    evidence: list = field(default_factory=list)  # tuples of `identity` column values
     query_text: str = ""
+    identity: RowIdentity | None = None
 
 
 def _norm(col: str) -> str:
@@ -60,7 +65,11 @@ def run(
     exclude_placeholders: bool = True,
     require_digit: bool = False,
     evidence_limit: int = 50000,
+    identity: RowIdentity | None = None,
 ) -> DuplicateResult:
+    # Resolve first: a table with no usable row identity must fail up front, not only once
+    # something is flagged and evidence is needed. Raises NoRowIdentity.
+    identity = identity or resolve_row_identity(cur, schema, table)
     key = _norm(f'"{column}"')
     mode = "shared_identifier" if distinct_of else "duplicate"
 
@@ -122,12 +131,15 @@ def run(
     evidence: list = []
     if flagged_keys:
         keys = [g[0] for g in groups]
+        pk = identity.select_list()
         cur.execute(
-            f'SELECT _row_no, {key} FROM "{schema}"."{table}" '
-            f'WHERE {key} = ANY(%s) ORDER BY {key}, _row_no LIMIT %s',
+            sql.SQL("SELECT ") + pk
+            + sql.SQL(" FROM ") + sql.Identifier(schema, table)
+            + sql.SQL(f" WHERE {key} = ANY(%s) ORDER BY {key}, ") + pk
+            + sql.SQL(" LIMIT %s"),
             [keys, evidence_limit],
         )
-        evidence = [(int(r[0]), r[1]) for r in cur.fetchall()]
+        evidence = [tuple(r) for r in cur.fetchall()]
 
     return DuplicateResult(
         mode=mode,
@@ -140,4 +152,5 @@ def run(
         top_groups=top,
         evidence=evidence,
         query_text=query,
+        identity=identity,
     )

@@ -1,5 +1,22 @@
 # Changelog
 
+## [Unreleased]
+- **Evidence now identifies rows by primary key, not `_row_no`.** Before, `duplicate-analysis`,
+  `fuzzy-entity-match` and `cross-dataset-match` selected a `_row_no` column that only exists in
+  tables our own Excel ingestion created. On any native table they failed, and
+  `cross-dataset-match` failed unconditionally, at exactly the point where something was
+  flagged. New `core/identity.py` resolves a row identity in this order: the declared primary
+  key (composite keys supported), else `_row_no` if it is provably unique and non-null, else the
+  test is **refused**. Nothing is guessed from `ctid` or row position.
+- No schema migration. A single key is stored exactly as before, so existing evidence is
+  unchanged. A composite key stores JSON arrays in the same two `evidence_links` text columns
+  (`core.identity.decode` reverses it).
+- The identity check runs before dataset registration, so a refusal leaves no permanent row in
+  the append-only `datasets` table.
+- Tool output for these three tests gains `evidence_identity` (~15 tokens).
+- New `tests_engine/test_row_identity.py`: unit tests, plus `--integration`, which creates and
+  drops its own scratch database.
+
 ## [0.2.0] - 2026-09-20
 - The engine now lives inside the skill folder (`.claude/skills/forensic-test-engine/forensic_platform/`),
   so copying that one folder into any project installs everything. The repo is skill-only, with
