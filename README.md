@@ -1,4 +1,4 @@
-# Data-Idea
+# Data-Engine
 
 An evidence-first forensic data-analysis skill for fraud and anomaly detection, driven by
 Claude Code. The idea behind it is IDEA-style audit analytics: every record gets tested, and
