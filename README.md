@@ -1,12 +1,35 @@
 # Data-Idea
 
-An evidence-first forensic data-analysis engine for fraud and anomaly detection, driven by
+An evidence-first forensic data-analysis skill for fraud and anomaly detection, driven by
 Claude Code. The idea behind it is IDEA-style audit analytics: every record gets tested, and
 every result can be reproduced. No proprietary IDEA code or algorithms are used.
 
 **The core rule:** Claude never calculates a forensic statistic. Deterministic Python and SQL
 compute everything. Claude chooses which registered test to run, runs it, and explains the
 result. Every result is written to an append-only evidence store with an audit trail.
+
+**It's a skill, not a plugin.** Everything lives in one self-contained folder,
+`.claude/skills/forensic-test-engine/`. Copy that folder into any project and it works.
+
+## Use it in any project
+
+Copy the one folder. Either into a single project:
+
+```powershell
+Copy-Item -Recurse .claude\skills\forensic-test-engine  <your-project>\.claude\skills\
+```
+
+or once for every project on your machine:
+
+```powershell
+Copy-Item -Recurse .claude\skills\forensic-test-engine  $env:USERPROFILE\.claude\skills\
+```
+
+The skill carries its own engine, so nothing else is needed from this repo. It finds your
+database settings in **your project's** `.mcp.json` (searching up from the folder you run it
+in), or from the path in the `FORENSIC_MCP_CONFIG` environment variable. See
+`.mcp.json.example` for the format. If neither exists, the engine refuses and says so. It
+never guesses a database.
 
 ## What it does
 
@@ -26,56 +49,67 @@ If a subtest isn't implemented, or a required column is missing or the wrong typ
 
 Each case gets its own PostgreSQL database with two schemas:
 
-- `source` — imported data. Every column is stored as TEXT so values are kept exactly as they
+- `source`: imported data. Every column is stored as TEXT so values are kept exactly as they
   were. The engine can only read it.
-- `_forensic` — `datasets`, `test_runs`, `findings`, `evidence_links` and `audit_log`. All are
+- `_forensic`: `datasets`, `test_runs`, `findings`, `evidence_links` and `audit_log`. All are
   append-only except the reviewer fields on `findings`.
 
 Each source table gets a content fingerprint when it's imported. Every finding links to the
 exact source rows behind it. Findings are classified `OBSERVATION` or `ANOMALY` and nothing
 higher: **an anomaly is a structural fact about the data, not evidence of wrongdoing.**
 
-## Setup
+## Setup (once per project)
 
-Requires Python 3.11+, PostgreSQL 14+ and Node.js (for the MCP servers).
+Requires Python 3.11+, PostgreSQL 14+ and Node.js (only if you use the MCP database servers).
 
-```
+```powershell
+$E = ".claude\skills\forensic-test-engine"
 python -m venv .venv
-.venv\Scripts\pip install -r requirements.txt
-copy .mcp.json.example .mcp.json        # then set your own postgres password
+.venv\Scripts\pip install -r $E\requirements.txt
+copy .mcp.json.example .mcp.json          # then put your own postgres password in it
 ```
 
 Then set up a case:
 
-```
-.venv\Scripts\python.exe forensic_platform\scripts\create_case_db.py --database my_case_db
-.venv\Scripts\python.exe forensic_platform\ingestion\excel_ingest.py --source "path\to\data.xlsx" --database my_case_db
-.venv\Scripts\python.exe forensic_platform\scripts\bootstrap.py --database my_case_db --grant-schema source
+```powershell
+.venv\Scripts\python.exe $E\forensic_platform\scripts\create_case_db.py --database my_case_db
+.venv\Scripts\python.exe $E\forensic_platform\ingestion\excel_ingest.py --source "path\to\data.xlsx" --database my_case_db
+.venv\Scripts\python.exe $E\forensic_platform\scripts\bootstrap.py --database my_case_db --grant-schema source
 ```
 
-Restart Claude Code so it picks up the new MCP entries. After that, ask for a forensic test in
-plain language and the `forensic-test-engine` skill will send it to
-`forensic_platform/scripts/run_test.py`.
+Restart Claude Code, then ask for a forensic test in plain language. The skill sends it to the
+engine's `run_test.py`.
+
+## Optional: PDF and scan fallback
+
+Not used by the forensic engine. It's here for when OCR or plain text extraction fails on a
+document: `pip install -r requirements-pdf.txt` (`pypdf`, `pymupdf`, `opencv-python-headless`).
 
 ## Verifying the engine
 
-```
-.venv\Scripts\python.exe forensic_platform\tests_engine\test_fuzzy_entity_match.py
-.venv\Scripts\python.exe forensic_platform\fixtures\synthetic_seed.py --database my_case_db
+```powershell
+.venv\Scripts\python.exe $E\forensic_platform\tests_engine\test_fuzzy_entity_match.py
 ```
 
-The fixture builds a column that follows Benford's Law and one that deliberately doesn't. The
-test should pass the first and flag the second.
+To exercise the whole database path, use a **scratch** database, because it writes permanent
+rows into the append-only tables. Seed the fixture with
+`fixtures\synthetic_seed.py --database <scratch>`, which builds one column that follows
+Benford's Law and one that deliberately doesn't. `benford` should pass the first and flag the
+second (MAD 0.00563 vs 0.20069). Then run `scripts\verify_bootstrap.py --database <scratch>`
+to confirm the role can't update, delete or create anything it shouldn't.
 
 ## Never commit case data
 
 `.gitignore` blocks credentials (`.mcp.json`), spreadsheets, outputs and case folders. The
-engine is meant to be reused across cases, so the evidence always stays with the case and never
-goes into this repository.
+engine is reusable, so the evidence always stays with the case and never goes into this
+repository.
 
 ## Known limitations
 
-- Windows-first: the setup commands and the skill use `.venv\Scripts\python.exe`.
+- Windows-first: the commands above are PowerShell, and the skill prefers `.venv\Scripts\python.exe`.
 - Credentials still come from `.mcp.json`. Moving them to an OS credential store is planned.
-- Can't be installed as a Claude Code plugin yet. For now, clone the repo and use it as your
-  project.
+- The skill relies on Claude Code's standard project and user skill loading. The engine itself
+  is tested from a foreign project, but loading the skill through Claude in a new project
+  hasn't been tested end to end yet.
+- Short names one letter apart (e.g. `ALICE ROY` / `ALICE RAY`) stay separate at the default
+  0.55 threshold. That's deliberate: they could be different people.

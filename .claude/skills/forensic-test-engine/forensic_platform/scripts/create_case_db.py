@@ -11,20 +11,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 import psycopg2
 from psycopg2 import sql
 from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-MCP_CONFIG_PATH = PROJECT_ROOT / ".mcp.json"
-
-
-def superuser_dsn(database: str = "postgres") -> str:
-    cfg = json.loads(MCP_CONFIG_PATH.read_text(encoding="utf-8"))
-    base = cfg["mcpServers"]["local-postgres-cluster"]["args"][-1]
-    return f"{base.rsplit('/', 1)[0]}/{database}"
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from forensic_platform.core.config import find_mcp_config, superuser_dsn  # noqa: E402
 
 
 def main() -> None:
@@ -45,7 +40,8 @@ def main() -> None:
     finally:
         conn.close()
 
-    cfg = json.loads(MCP_CONFIG_PATH.read_text(encoding="utf-8"))
+    config_path = find_mcp_config()
+    cfg = json.loads(config_path.read_text(encoding="utf-8"))
     entry = f"local-postgres-cluster-{args.database}"
     if entry in cfg["mcpServers"]:
         print(f"{entry} already present in .mcp.json")
@@ -54,7 +50,7 @@ def main() -> None:
             "command": "npx",
             "args": ["-y", "@modelcontextprotocol/server-postgres", superuser_dsn(args.database)],
         }
-        MCP_CONFIG_PATH.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+        config_path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
         print(f"added {entry} to .mcp.json (available after session restart)")
 
 

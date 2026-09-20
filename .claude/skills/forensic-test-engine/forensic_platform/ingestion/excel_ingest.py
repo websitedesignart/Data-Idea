@@ -32,17 +32,10 @@ from psycopg2 import sql
 
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from forensic_platform.core.config import superuser_dsn  # noqa: E402
 from forensic_platform.core.hashing import column_signature  # noqa: E402
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-MCP_CONFIG_PATH = PROJECT_ROOT / ".mcp.json"
 MODULUS = 1 << 256
-
-
-def superuser_dsn(database: str) -> str:
-    cfg = json.loads(MCP_CONFIG_PATH.read_text(encoding="utf-8"))
-    base = cfg["mcpServers"]["local-postgres-cluster"]["args"][-1]
-    return f"{base.rsplit('/', 1)[0]}/{database}"
 
 
 def file_sha256(path: Path) -> str:
@@ -80,6 +73,9 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--source", required=True)
     ap.add_argument("--database", required=True)
+    ap.add_argument("--output-dir", default="output",
+                    help="Where to write the ingestion manifest (default: ./output in the "
+                         "current directory - keep it with the case, not with the engine)")
     args = ap.parse_args()
 
     source = Path(args.source)
@@ -192,7 +188,7 @@ def main() -> None:
     finally:
         conn.close()
 
-    out = PROJECT_ROOT / "clinical_establishment_registration" / "output" / \
+    out = Path(args.output_dir).resolve() / \
         f"ingestion_manifest_{started.strftime('%Y%m%d_%H%M%S')}.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(manifest, indent=2), encoding="utf-8")

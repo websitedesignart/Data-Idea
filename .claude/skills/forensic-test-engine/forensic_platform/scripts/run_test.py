@@ -19,6 +19,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from forensic_platform.core.config import forensic_dsn
 from forensic_platform.core.db import connect
 from forensic_platform.tests_engine import base
 from forensic_platform.tests_engine import benford
@@ -289,6 +290,14 @@ def main() -> None:
             "reason": f"Subtest '{args.subtest}' is registered as '{entry.get('status')}', not implemented. "
                       f"Nothing was executed.",
         }))
+        return
+
+    try:
+        forensic_dsn(args.database)
+    except RuntimeError as exc:
+        # Missing/unreadable project config: refuse in the same JSON shape as every
+        # other refusal so the caller never has to parse a traceback.
+        print(json.dumps({"status": "refused", "reason": f"{exc} Nothing was executed."}))
         return
 
     with connect(args.database) as conn:

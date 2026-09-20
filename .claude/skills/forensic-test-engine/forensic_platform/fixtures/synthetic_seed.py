@@ -16,23 +16,16 @@ should be able to do — by design it has no CREATE/INSERT on public).
 from __future__ import annotations
 
 import argparse
-import json
 import random
+import sys
 from pathlib import Path
 
 import psycopg2
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-MCP_CONFIG_PATH = PROJECT_ROOT / ".mcp.json"
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from forensic_platform.core.config import superuser_dsn  # noqa: E402
 
 N_ROWS = 2000
-
-
-def superuser_dsn(database: str) -> str:
-    cfg = json.loads(MCP_CONFIG_PATH.read_text(encoding="utf-8"))
-    base = cfg["mcpServers"]["local-postgres-cluster"]["args"][-1]
-    prefix = base.rsplit("/", 1)[0]
-    return f"{prefix}/{database}"
 
 
 def generate_rows() -> list[tuple[float, float]]:

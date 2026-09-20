@@ -1,0 +1,6 @@
+# OPTIONAL - not used by the forensic engine.
+# PDF reading and scanned-document fallback, for when OCR or plain text extraction
+# doesn't work. Install only if you need it:  pip install -r requirements-pdf.txt
+pypdf
+pymupdf
+opencv-python-headless

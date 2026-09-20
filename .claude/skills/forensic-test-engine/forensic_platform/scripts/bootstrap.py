@@ -12,24 +12,18 @@ MCP server entry, then applies forensic_platform/sql/001_bootstrap.sql.
 import argparse
 import json
 import secrets
+import sys
 from pathlib import Path
 
 import psycopg2
 from psycopg2 import sql
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-MCP_CONFIG_PATH = PROJECT_ROOT / ".mcp.json"
-BOOTSTRAP_SQL_PATH = PROJECT_ROOT / "forensic_platform" / "sql" / "001_bootstrap.sql"
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from forensic_platform.core.config import find_mcp_config, superuser_dsn  # noqa: E402
 
-
-def load_superuser_dsn(mcp_config: dict) -> str:
-    args = mcp_config["mcpServers"]["local-postgres-cluster"]["args"]
-    return args[-1]
-
-
-def build_dsn(base_dsn: str, database: str) -> str:
-    prefix = base_dsn.rsplit("/", 1)[0]
-    return f"{prefix}/{database}"
+# The SQL ships with the engine, so it is located relative to this file - never to the
+# project the engine happens to be copied into.
+BOOTSTRAP_SQL_PATH = Path(__file__).resolve().parents[1] / "sql" / "001_bootstrap.sql"
 
 
 def ensure_forensic_role(cursor) -> None:
@@ -54,7 +48,7 @@ def register_mcp_entry(mcp_config: dict, database: str, dsn_with_password: str) 
         "command": "npx",
         "args": ["-y", "@modelcontextprotocol/server-postgres", dsn_with_password],
     }
-    MCP_CONFIG_PATH.write_text(json.dumps(mcp_config, indent=2) + "\n", encoding="utf-8")
+    find_mcp_config().write_text(json.dumps(mcp_config, indent=2) + "\n", encoding="utf-8")
     print(f"added {entry_name} to .mcp.json")
 
 
@@ -68,10 +62,10 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    mcp_config = json.loads(MCP_CONFIG_PATH.read_text(encoding="utf-8"))
-    superuser_dsn = build_dsn(load_superuser_dsn(mcp_config), args.database)
+    mcp_config = json.loads(find_mcp_config().read_text(encoding="utf-8"))
+    admin_dsn = superuser_dsn(args.database)
 
-    conn = psycopg2.connect(superuser_dsn)
+    conn = psycopg2.connect(admin_dsn)
     conn.autocommit = True
     try:
         with conn.cursor() as cur:
@@ -101,7 +95,7 @@ def main() -> None:
                 print(f"granted read-only access on schema '{schema}' to forensic_app")
 
         if new_password is not None:
-            prefix, rest = superuser_dsn.split("://", 1)
+            prefix, rest = admin_dsn.split("://", 1)
             userinfo, hostpart = rest.split("@", 1)
             forensic_dsn = f"{prefix}://forensic_app:{new_password}@{hostpart}"
             register_mcp_entry(mcp_config, args.database, forensic_dsn)

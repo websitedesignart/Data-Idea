@@ -2,15 +2,24 @@
 Verifies the Phase 1 bootstrap actually behaves as designed, connecting as
 forensic_app (not the superuser) to prove the least-privilege grants and the
 append-only trigger work from that role's own perspective.
+
+Run against a SCRATCH database only: it inserts a test row into the append-only
+evidence tables, and that row can never be removed.
+
+    python forensic_platform/scripts/verify_bootstrap.py --database my_scratch_db
 """
-import json
+import argparse
+import sys
 from pathlib import Path
 
 import psycopg2
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-mcp_config = json.loads((PROJECT_ROOT / ".mcp.json").read_text(encoding="utf-8"))
-dsn = mcp_config["mcpServers"]["local-postgres-cluster-demo-forensic"]["args"][-1]
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from forensic_platform.core.config import forensic_dsn  # noqa: E402
+
+_parser = argparse.ArgumentParser()
+_parser.add_argument("--database", required=True)
+dsn = forensic_dsn(_parser.parse_args().database)
 
 conn = psycopg2.connect(dsn)
 conn.autocommit = True
