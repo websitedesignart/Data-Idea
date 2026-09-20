@@ -75,7 +75,7 @@ def integration_tests():
             CREATE VIEW v_slow_row AS SELECT i AS id, slow_amt(i) AS amount FROM generate_series(1, 200) i;
             GRANT SELECT ON ALL TABLES IN SCHEMA public TO forensic_app;
         ''')
-        env = {**os.environ, "FORENSIC_MCP_CONFIG": str(cfg_path)}
+        env = {**os.environ, "FORENSIC_MCP_CONFIG": str(cfg_path), "FORENSIC_MASK_SALT": "t" * 40}
 
         def run(table, column="amount"):
             p = subprocess.run([sys.executable, str(ENGINE / "scripts" / "run_test.py"), "--database", scratch,

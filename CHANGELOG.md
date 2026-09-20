@@ -1,6 +1,29 @@
 # Changelog
 
 ## [Unreleased]
+- **Identifiers are masked before they reach Claude** (`core/masking.py`). `top_groups` and
+  `sample_only_*` used to print raw key values, Aadhaar-style numbers and bank accounts included.
+  They are now 12-letter tokens: an HMAC-SHA256 of the normalised value under a per-project secret
+  (`$FORENSIC_MASK_SALT`, or a `.forensic_mask_salt` file created beside the project's `.mcp.json`
+  on first use and git-ignored). Stable, so a group can be followed across runs; keyed, because an
+  unkeyed hash of a 12-digit number is brute-forceable; one-way, so rows are found through evidence
+  links instead. Case, spacing, hyphens and full-width digits do not split one identifier in two.
+- Fail-closed. Everything is masked by default. `--reveal-values` shows raw values only when the
+  column name and every value look non-sensitive (Aadhaar-, PAN-, IFSC-, mobile- or e-mail-shaped,
+  or a digit string of 9 or more); otherwise the output stays masked and gives the reason. If one
+  side of a cross-dataset comparison is unsafe, both sides stay masked. With no usable key the
+  values are withheld and the counts are still reported. The output says which applies
+  (`values`: `masked`, `revealed` or `withheld`). Shape checks are heuristics: a sensitive value
+  with an unusual shape in an innocuously named column would pass `--reveal-values`, which is
+  why revealing is opt-in and never the default.
+- Measured read-only on the original payroll-invoicing database: the two sensitive columns found
+  (beneficiary account, IFSC; 63 values) were all masked with zero raw values leaking, even with
+  reveal requested, and its write counters were unchanged.
+- New `tests_engine/test_masking.py` (59 checks: unit plus the real entry point against a scratch
+  database). Fourteen deliberate weakenings were tried: 13 were caught, and the survivor is
+  an equivalent mutation (a redundant Aadhaar shape that the long-digit rule already covers). The
+  older contract test that recorded the raw-key output as a known defect now asserts it is fixed.
+  Test suites now supply their own key, so running them never writes a key file into a project.
 - **A profiler and role suggestions** (`core/profile.py`, `core/roles.py`, no new libraries). A
   table is measured once (one aggregate scan per batch of 60 columns) for exactly the facts
   suitability rules ask for: eligible and distinct counts, magnitude span, nonpositive and integer

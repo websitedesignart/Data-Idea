@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from forensic_platform.core.config import forensic_dsn
 from forensic_platform.core.db import connect, describe_db_error, timeouts
+from forensic_platform.core import masking
 from forensic_platform.core.identity import NoRowIdentity, resolve_row_identity
 from forensic_platform.core.sqlsafe import UnsafeIdentifier, check_identifier, table_exists
 from forensic_platform.tests_engine import base
@@ -42,6 +43,29 @@ DISPATCH = {
     "fuzzy-entity-match": fuzzy_entity_match,
     "cross-dataset-match": cross_dataset_match,
 }
+
+
+def _salt():
+    """The project's masking key, or None (then values are withheld, never printed)."""
+    try:
+        return masking.load_salt()
+    except masking.MaskSaltUnavailable:
+        return None
+
+
+def _mode_info(protected) -> dict:
+    info = {"values": protected.mode}
+    if protected.note:
+        info["values_note"] = protected.note
+    return info
+
+
+def _mask_groups(groups: list, column: str, args) -> tuple[list, dict]:
+    """Group rows for Claude with their key values masked (see core/masking.py)."""
+    p = masking.protect([g["key_value"] for g in groups], column=column, salt=_salt(), reveal=args.reveal_values)
+    if p.mode == "withheld":
+        return [{k: v for k, v in g.items() if k != "key_value"} for g in groups], _mode_info(p)
+    return [{**g, "key_value": v} for g, v in zip(groups, p.values)], _mode_info(p)
 
 
 def _refuse(cur, args, dataset_id, reason: str) -> None:
@@ -105,6 +129,8 @@ def _finish_duplicate_analysis(cur, args, entry, module, dataset_id, result) -> 
 
     base.log_audit(cur, ACTOR, f"run:{args.subtest}", dataset_id, __file__, vars(args), "success")
 
+    top_groups, values_info = _mask_groups(result.top_groups[:15], args.column, args)
+
     print(json.dumps({
         "status": "success",
         "run_id": run_id,
@@ -123,7 +149,8 @@ def _finish_duplicate_analysis(cur, args, entry, module, dataset_id, result) -> 
         "evidence_links_written": linked,
         "evidence_identity": result.identity.describe(),
         "evidence_truncated": truncated,
-        "top_groups": result.top_groups[:15],
+        "top_groups": top_groups,
+        **values_info,
         "limitations": limitations,
         "query_text": result.query_text,
     }, indent=2, default=str))
@@ -181,6 +208,8 @@ def _finish_fuzzy_entity_match(cur, args, entry, module, dataset_id, result) -> 
 
     base.log_audit(cur, ACTOR, f"run:{args.subtest}", dataset_id, __file__, vars(args), "success")
 
+    top_groups, values_info = _mask_groups(result.top_groups[:15], args.column, args)
+
     print(json.dumps({
         "status": "success",
         "run_id": run_id,
@@ -199,7 +228,8 @@ def _finish_fuzzy_entity_match(cur, args, entry, module, dataset_id, result) -> 
         "evidence_links_written": linked,
         "evidence_identity": result.identity.describe(),
         "evidence_truncated": truncated,
-        "top_groups": result.top_groups[:15],
+        "top_groups": top_groups,
+        **values_info,
         "limitations": limitations,
     }, indent=2, default=str))
 
@@ -249,6 +279,15 @@ def _finish_cross_dataset_match(cur, args, entry, module, dataset_id, result) ->
 
     base.log_audit(cur, ACTOR, f"run:{args.subtest}", dataset_id, __file__, vars(args), "success")
 
+    salt = _salt()
+    sample_left = masking.protect(result.sample_only_left[:10], column=args.column, salt=salt, reveal=args.reveal_values)
+    sample_right = masking.protect(result.sample_only_right[:10], column=args.right_column, salt=salt, reveal=args.reveal_values)
+    if sample_left.mode != sample_right.mode:
+        # never show one side raw because the other side was unsafe: mask both, and say why
+        note = sample_left.note or sample_right.note
+        sample_left = masking.protect(result.sample_only_left[:10], column=args.column, salt=salt)
+        sample_right = masking.protect(result.sample_only_right[:10], column=args.right_column, salt=salt)
+        sample_left = masking.Protected(sample_left.values, sample_left.mode, note)
     print(json.dumps({
         "status": "success",
         "run_id": run_id,
@@ -261,8 +300,9 @@ def _finish_cross_dataset_match(cur, args, entry, module, dataset_id, result) ->
         "only_left": result.only_left, "only_right": result.only_right,
         "left_coverage_pct": result.left_coverage_pct,
         "right_coverage_pct": result.right_coverage_pct,
-        "sample_only_left": result.sample_only_left[:10],
-        "sample_only_right": result.sample_only_right[:10],
+        "sample_only_left": sample_left.values,
+        "sample_only_right": sample_right.values,
+        **_mode_info(sample_left),
         "evidence_links_written": linked,
         "evidence_identity": result.identity.describe(),
         "limitations": limitations,
@@ -294,6 +334,9 @@ def main() -> None:
     parser.add_argument("--threshold", type=float, default=0.55,
                         help="fuzzy-entity-match: similarity threshold for treating two "
                              "names as the same entity")
+    parser.add_argument("--reveal-values", action="store_true",
+                        help="Show raw key values instead of masked references. Honoured only when "
+                             "neither the column nor its values look sensitive")
     parser.add_argument("--label", default=None, help="Optional human label for this run")
     args = parser.parse_args()
     try:

@@ -122,6 +122,7 @@ def integration_tests():
 
         base_env = {k: v for k, v in os.environ.items() if not k.startswith("FORENSIC_") or k == "FORENSIC_MCP_CONFIG"}
         base_env["FORENSIC_MCP_CONFIG"] = str(cfg_path)
+        base_env["FORENSIC_MASK_SALT"] = "t" * 40
 
         def run(env_extra, *args, timeout=60):
             t0 = time.time()

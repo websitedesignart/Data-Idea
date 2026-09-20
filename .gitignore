@@ -23,3 +23,6 @@ Demo Data/
 
 # Project-local instructions may contain machine-specific details and secrets
 CLAUDE.md
+
+# Masking key: a per-project secret, never commit (see core/masking.py)
+.forensic_mask_salt

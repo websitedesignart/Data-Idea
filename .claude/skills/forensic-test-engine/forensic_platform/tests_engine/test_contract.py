@@ -206,7 +206,7 @@ def integration_tests():
             INSERT INTO t_right (ref) SELECT 'K' || i FROM generate_series(1, 100) i;
             GRANT SELECT ON ALL TABLES IN SCHEMA public TO forensic_app;
         ''')
-        env = {**os.environ, "FORENSIC_MCP_CONFIG": str(cfg_path)}
+        env = {**os.environ, "FORENSIC_MCP_CONFIG": str(cfg_path), "FORENSIC_MASK_SALT": "t" * 40}
 
         def current_output(*args):
             p = subprocess.run([sys.executable, str(ENGINE / "scripts" / "run_test.py"), "--database", scratch,
@@ -281,7 +281,8 @@ def integration_tests():
                   f"{old_len} -> {new_len} chars (~{old_len // 4} -> ~{new_len // 4} tokens, ESTIMATE)")
         print(f"  all four together: {total_old} -> {total_new} chars (~{total_old // 4} -> ~{total_new // 4} tokens, ESTIMATE)")
         printed_today = json.dumps(current_output("--subtest", "duplicate-analysis", "--table", "t_people", "--column", "reg", "--distinct-of", "name")[0].get("top_groups"))
-        check("run_test.py today prints the raw key values in top_groups", len(raw_dup_keys) > 0 and all(k in printed_today for k in raw_dup_keys[:3]), raw_dup_keys[:3])
+        check("run_test.py no longer prints the raw key values in top_groups (masked since A5)",
+              len(raw_dup_keys) > 0 and not any(k in printed_today for k in raw_dup_keys), raw_dup_keys[:3])
         dup_json = cases[1][1].to_json()
         check("the contract's equivalent contains NONE of those raw values", not any(k in dup_json for k in raw_dup_keys), f"{len(raw_dup_keys)} keys checked")
         check("...only masked references", all(str(s.subject).startswith("ref:") for s in cases[1][1].top_signals) and len(cases[1][1].top_signals) > 0)
