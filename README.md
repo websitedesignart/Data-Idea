@@ -100,6 +100,15 @@ Benford's Law and one that deliberately doesn't. `benford` should pass the first
 second (MAD 0.00563 vs 0.20069). Then run `scripts\verify_bootstrap.py --database <scratch>`
 to confirm the role can't update, delete or create anything it shouldn't.
 
+## Safety limits
+
+Every analysis session is capped: a single statement may run for 60 s and a lock wait may last
+5 s. Change them with the `FORENSIC_STATEMENT_TIMEOUT_MS` and `FORENSIC_LOCK_TIMEOUT_MS`
+environment variables (`0` removes a limit, which is not recommended on data you don't own). A
+cancelled test returns a short error such as `{"status":"error","code":"STATEMENT_TIMEOUT"}`,
+nothing is recorded as a result, and the attempt is written to the audit log. The limits apply
+to analysis runs, not to the one-off setup and ingestion scripts.
+
 ## Never commit case data
 
 `.gitignore` blocks credentials (`.mcp.json`), spreadsheets, outputs and case folders. The

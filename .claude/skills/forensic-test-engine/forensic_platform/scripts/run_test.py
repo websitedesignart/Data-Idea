@@ -17,10 +17,12 @@ import json
 import sys
 from pathlib import Path
 
+import psycopg2
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from forensic_platform.core.config import forensic_dsn
-from forensic_platform.core.db import connect
+from forensic_platform.core.db import connect, describe_db_error, timeouts
 from forensic_platform.core.identity import NoRowIdentity, resolve_row_identity
 from forensic_platform.core.sqlsafe import UnsafeIdentifier, check_identifier, table_exists
 from forensic_platform.tests_engine import base
@@ -294,7 +296,29 @@ def main() -> None:
                              "names as the same entity")
     parser.add_argument("--label", default=None, help="Optional human label for this run")
     args = parser.parse_args()
+    try:
+        _execute(args)
+    except psycopg2.Error as exc:
+        # Anything the database raised that a step did not handle itself (a timeout while
+        # registering a dataset or writing evidence, a dropped connection, ...): report a
+        # short code and reason, never a traceback.
+        _report_db_failure(args, exc)
 
+
+def _report_db_failure(args, exc: psycopg2.Error) -> None:
+    code, reason = describe_db_error(exc)
+    try:
+        # The failed transaction was rolled back, so record the failure in a fresh one.
+        # Best effort: a logging failure must never hide the original error.
+        with connect(args.database) as conn:
+            base.log_audit(conn.cursor(), ACTOR, f"run:{args.subtest}", None, __file__,
+                           vars(args), "error", error_text=f"{code}: {reason}")
+    except Exception:
+        pass
+    print(json.dumps({"status": "error", "code": code, "reason": reason}))
+
+
+def _execute(args) -> None:
     entry = base.get_test_entry(args.subtest)
     if entry.get("status") != "implemented":
         print(json.dumps({
@@ -306,6 +330,7 @@ def main() -> None:
 
     try:
         forensic_dsn(args.database)
+        timeouts()  # a bad timeout setting is a configuration problem, refused up front
     except RuntimeError as exc:
         # Missing/unreadable project config: refuse in the same JSON shape as every
         # other refusal so the caller never has to parse a traceback.
@@ -400,6 +425,9 @@ def main() -> None:
                 return
 
         module = DISPATCH[args.subtest]
+        # A failed statement aborts the whole transaction. The savepoint lets us roll back just
+        # the test, keep the dataset registration, and still write the failure to the audit log.
+        cur.execute("SAVEPOINT test_run")
         try:
             if args.subtest == "cross-dataset-match":
                 if not (args.right_table and args.right_column):
@@ -449,11 +477,16 @@ def main() -> None:
             else:
                 result = module.run(cur, args.schema, args.table, args.column)
         except Exception as exc:
+            if isinstance(exc, psycopg2.Error):
+                cur.execute("ROLLBACK TO SAVEPOINT test_run")
+                code, reason = describe_db_error(exc)
+            else:
+                code, reason = "TEST_ERROR", str(exc)
             base.log_audit(
                 cur, ACTOR, f"run:{args.subtest}", dataset_id, __file__,
-                vars(args), "error", error_text=str(exc),
+                vars(args), "error", error_text=f"{code}: {reason}",
             )
-            print(json.dumps({"status": "error", "reason": str(exc)}))
+            print(json.dumps({"status": "error", "code": code, "reason": reason}))
             return
 
         if args.subtest == "duplicate-analysis":

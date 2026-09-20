@@ -62,7 +62,7 @@ Subtest-specific arguments for `run_test.py`:
    ```
 4. Parse the JSON response:
    - `"status": "refused"`: the engine declined to run (unimplemented subtest, missing column, wrong type). Report the exact reason. This is not an error to work around; it's the engine correctly refusing to guess.
-   - `"status": "error"`: something failed during execution. Report the error text; do not fabricate a result.
+   - `"status": "error"`: something failed during execution. Report the `code` and `reason`; do not fabricate a result. If the code is `STATEMENT_TIMEOUT` or `LOCK_TIMEOUT`, the engine protected the database by cancelling the query. Tell the user and ask before retrying. Never raise the `FORENSIC_*_TIMEOUT_MS` limits yourself.
    - `"status": "success"`: report the finding(s) exactly as returned. Cite `run_id` and `finding_id`, quote the statistics verbatim, state the finding's classification (OBSERVATION, ANOMALY, etc.), and include the `limitations` text.
 5. Never upgrade a finding's classification yourself. An `ANOMALY` is a structural or statistical fact about the data, not evidence of fraud. Say so explicitly if the user's framing implies otherwise. Classification changes toward `INVESTIGATION LEAD` or `CONCLUSION` require human review, which is not yet built.
 

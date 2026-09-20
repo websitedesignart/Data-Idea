@@ -1,6 +1,26 @@
 # Changelog
 
 ## [Unreleased]
+- **Timeouts.** Every analysis session now has a statement timeout (default 60 s) and a lock
+  timeout (default 5 s), so a runaway query is cancelled and a blocked one gives up. Set per
+  session through connection options, so nothing in the database changes. Configure with
+  `FORENSIC_STATEMENT_TIMEOUT_MS` and `FORENSIC_LOCK_TIMEOUT_MS`; `0` disables a limit; invalid
+  values are refused up front. Measured in a scratch database: a runaway query that used to
+  run 23 s is cancelled at ~1 s, and a query on a locked table that used to block forever gives
+  up in ~1 s. `idle_in_transaction_session_timeout` is deliberately not set, since tests do
+  CPU-bound work (e.g. fuzzy clustering) inside an open transaction.
+- **A failing test now returns a compact error, not a traceback.** Before, a failure inside a
+  test printed a ~2,000-character traceback: the audit-log write ran inside the transaction
+  PostgreSQL had already aborted, and failed too. A savepoint now lets the engine roll back
+  just the test, keep the dataset registration and write the failure to the audit log. Errors
+  return `{"status":"error","code":...,"reason":...}` (~290 characters) with the codes
+  `STATEMENT_TIMEOUT`, `LOCK_TIMEOUT`, `DATABASE_ERROR` or `TEST_ERROR`. Failures outside the
+  test call (registration, evidence writes, a dropped connection) are reported the same way and
+  logged in a fresh transaction.
+- The skill now tells Claude to report a timeout and ask before retrying, and never to raise the
+  limits itself.
+- New `tests_engine/test_timeouts.py` (31 checks). Run against the previous engine version, 15
+  of them fail.
 - **Security: caller-supplied names can no longer run extra SQL.** Schema, table and column
   names (from a user or an LLM) were pasted into SQL text at 30+ sites, some with no quoting at
   all. Verified exploitable: a crafted `--table` inserted a forged row into the append-only
