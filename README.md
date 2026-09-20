@@ -129,6 +129,8 @@ repository.
   0.55 threshold. That's deliberate: they could be different people.
 - Schema, table and column names are quoted safely, so quotes, spaces, reserved words and
   non-ASCII all work. Names that are empty, longer than 63 bytes, or contain `%` are refused.
+- `run_suite.py` checks a whole table in one call, but only for columns a named person confirmed for
+  each role; without that it profiles the table and proposes columns for the user to confirm.
 - Every result is one compact line (`status`, `verdict`, `summary`, top signals, and pointers to the
   recorded run, finding, dataset version and evidence). Identifiers are never printed. Read a
   method's limitations with `scripts/describe_method.py <method>@<version>`.

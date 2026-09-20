@@ -1,6 +1,35 @@
 # Changelog
 
 ## [Unreleased]
+- **`run_suite`: check a whole table in one call** (`scripts/run_suite.py`, `core/suite.py`). Before,
+  Claude had to work out and run each method separately. Now one command plans the applicable
+  methods and returns one combined, compact result, with `ran`, `declined`, `refused`, `errors`,
+  `skipped` (with reason codes), the anomaly count and one dataset version. Measured on a synthetic
+  table: one reply of 1,975 characters (about 493 tokens, ESTIMATE) for four planned methods, of
+  which one was declined and three ran.
+- Nothing is chosen for the user. A method runs only for a column a named person confirmed for the
+  role it needs (`--amount`, `--identifier`, `--entity-name`, `--confirmed-by`). With no
+  confirmation the suite runs nothing: it profiles the table once and replies
+  `needs_confirmation` with proposals (up to 3 columns per role, each with the evidence-count
+  label from the role suggester, plus the sensitive columns). Columns supplied without a confirmer
+  are reported as pending. A method whose role has no confirmed column is listed as skipped with the
+  reason, and cross-dataset-match is always listed as needing a second table.
+- Every method still runs through `run_test.py`, so each keeps its own guards, recorded run, finding
+  and audit row; the suite adds no path around them and one audit row that lists the steps, run ids
+  and confirmer. One method refusing, declining, failing or overrunning its time (`--timeout-seconds`,
+  default 300) never stops the others. A stderr stream, which can carry data, is never echoed.
+  If the table changes between methods the reply is flagged `DATASET_CHANGED_DURING_SUITE` and
+  lists the versions instead of merging them. The combined reply has a 6,000-character budget and
+  is trimmed (extra signals first, then summaries) without ever dropping a method or verdict;
+  trimming works on a copy, since the first version modified its input.
+- A table estimated over 2,000,000 rows is declined `UNSAFE_TO_RUN` before any scan
+  (`--allow-large-profile` overrides).
+- Measured read-only on the original payroll-invoicing database: the proposal reply for each of its
+  12 tables was 423 to 751 characters, and its write counters were unchanged. (The suite itself
+  writes an audit row, so it was deliberately not pointed at that database.)
+- New `tests_engine/test_suite.py` (unit tests plus a scratch database). Seventeen deliberate weakenings
+  were tried; the first pass missed two (an anomaly-count check that passed by coincidence, and a
+  stderr check exercising the wrong failure path), tests were fixed, and all seventeen are caught.
 - **One compact result for every method, refusal and error** (`core/present.py`). `run_test.py`
   used to print four differently shaped, pretty-printed results that repeated the limitations text,
   the query text and constant wording every run. It now prints one line in the contract shape:
