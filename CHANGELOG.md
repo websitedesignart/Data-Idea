@@ -1,6 +1,26 @@
 # Changelog
 
 ## [Unreleased]
+- **A single result contract for every method** (`core/contract.py`, standard library only). The
+  four methods each printed a differently shaped, pretty-printed result that repeated constant
+  text and, in `top_groups`, printed **raw key values**. The contract is one compact shape
+  (`MethodResult`) carrying counts, a few top `Signal`s and pointers: dataset version and its
+  basis, method version, finding ids, and how evidence is keyed (never the rows). Constant text
+  is referenced (`limits`), not repeated. Methods are not migrated to it yet; that is a later
+  step, so `run_test.py` output is unchanged for now.
+- Rules are enforced when a result is built, not documented: the engine may only emit
+  OBSERVATION or ANOMALY (review states and conclusions are human-only and rejected); a signal's
+  subject cannot be a raw string (only a masked reference of 12 letters, a group label or a row
+  index, so a digit-based identifier can never pass as one); metrics hold numbers, booleans and
+  short lowercase tokens only; `strength` is an effect size in [0, 1], not a probability; a
+  completed result must name its dataset version; a size budget of 2,000 characters is enforced
+  and `build()` trims the weakest signals to fit. Shape checks cannot prove a value is not
+  sensitive; masking (a later step) and review remain responsible for that.
+- Measured against the four real methods on synthetic tables: 7,650 characters printed today
+  become 2,633 in the contract (about 1,912 to 658 tokens, ESTIMATE), and the raw key values
+  `run_test.py` prints today do not appear in it at all.
+- New `tests_engine/test_contract.py` (71 checks: 60 unit with no database, 11 integration). Seven
+  deliberate weakenings of the validator were each caught by it.
 - **Dataset versions are now defined by content, not row count.** Before, any table not imported
   by our own Excel ingestion was versioned by row count alone: a table whose *values* changed but
   whose row count did not was silently treated as the same dataset, so findings could cite a
