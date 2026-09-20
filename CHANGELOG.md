@@ -1,6 +1,30 @@
 # Changelog
 
 ## [Unreleased]
+- **A suitability framework: should this method run on this data at all?**
+  (`core/suitability.py`, standard library only.) A method declares rules over named, *measured*
+  facts, and the pure function `assess()` returns one of `SUPPORTED`, `SUPPORTED_WITH_WARNING`,
+  `INSUFFICIENT_DATA`, `NOT_APPLICABLE`, `REQUIRES_CONFIRMATION` or `UNSAFE_TO_RUN`, plus reason
+  codes. The most restrictive verdict wins. It is not wired into `run_test.py` yet; the Benford
+  guard that uses it is a later step.
+- Enforced structurally: a fact that was not measured is never assumed (it yields
+  `INSUFFICIENT_DATA`); a required role or domain input (holiday calendar, pay scale, approval
+  limit, ...) that was never supplied is `INSUFFICIENT_DATA`, and one supplied but not yet
+  confirmed by a human is `REQUIRES_CONFIRMATION`, so the engine cannot choose one itself; every
+  threshold carries `validated` (default false) and its basis, and an assessment reports when it
+  rested on unvalidated defaults; declining is recorded as a contract result, so "considered and
+  declined, and why" is itself evidence; `facts_required()` tells the profiler exactly what to
+  measure. A rule can say `unless=` another reason already explains it (a small sample makes
+  "few distinct values" meaningless), and rule sets whose `unless` chains form a cycle are
+  rejected because they could suppress every reason and silently return `SUPPORTED`.
+- Judged read-only against a real payroll-invoicing database, assuming a human had confirmed each
+  money-like column (70 columns): none would be `SUPPORTED`. 57 are `INSUFFICIENT_DATA` (under 300
+  rows) and 13 salary-line columns are `NOT_APPLICABLE` (22 to 34 distinct values across about
+  7,100 rows), which are exactly the columns where the previous Benford test ran and reported a
+  nonconformity. The thresholds in that run were illustrative, not final.
+- New `tests_engine/test_suitability.py` (57 checks, no database needed). Ten deliberate
+  weakenings of the framework were each caught; the first attempt exposed that the `unless` cycle
+  protection had no test, which was then added.
 - **A single result contract for every method** (`core/contract.py`, standard library only). The
   four methods each printed a differently shaped, pretty-printed result that repeated constant
   text and, in `top_groups`, printed **raw key values**. The contract is one compact shape
