@@ -18,7 +18,7 @@
 - The three copies of the text-normalisation expression are now one (`sqlsafe.norm_expr`).
 - Query results are unchanged: 12 read-only comparisons against values recorded before the
   change all match on real data.
-- New `tests_engine/test_identifier_safety.py` (36 checks). Run against the previous engine
+- New `tests_engine/test_identifier_safety.py` (35 checks). Run against the previous engine
   version, 18 of them fail.
 
 - **Evidence now identifies rows by primary key, not `_row_no`.** Before, `duplicate-analysis`,
