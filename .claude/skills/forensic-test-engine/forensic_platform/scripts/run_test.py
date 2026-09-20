@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from forensic_platform.core.config import forensic_dsn
 from forensic_platform.core.db import connect
 from forensic_platform.core.identity import NoRowIdentity, resolve_row_identity
+from forensic_platform.core.sqlsafe import UnsafeIdentifier, check_identifier, table_exists
 from forensic_platform.tests_engine import base
 from forensic_platform.tests_engine import benford
 from forensic_platform.tests_engine import duplicate_analysis
@@ -39,6 +40,12 @@ DISPATCH = {
     "fuzzy-entity-match": fuzzy_entity_match,
     "cross-dataset-match": cross_dataset_match,
 }
+
+
+def _refuse(cur, args, dataset_id, reason: str) -> None:
+    """Audit-log a refusal and print it in the standard compact shape."""
+    base.log_audit(cur, ACTOR, f"run:{args.subtest}", dataset_id, __file__, vars(args), "refused", error_text=reason)
+    print(json.dumps({"status": "refused", "reason": f"{reason} Nothing was executed."}))
 
 
 def _finish_duplicate_analysis(cur, args, entry, module, dataset_id, result) -> None:
@@ -308,6 +315,20 @@ def main() -> None:
     with connect(args.database) as conn:
         cur = conn.cursor()
 
+        # Names from the command line (a user, or an LLM) must be safe to use as identifiers
+        # before anything else happens. A refusal is audit-logged: an attempt is evidence too.
+        try:
+            for what, value in (
+                ("--schema", args.schema), ("--table", args.table), ("--column", args.column),
+                ("--distinct-of", args.distinct_of), ("--right-table", args.right_table),
+                ("--right-column", args.right_column), ("--right-schema", args.right_schema),
+            ):
+                if value is not None:
+                    check_identifier(value, what)
+        except UnsafeIdentifier as exc:
+            _refuse(cur, args, None, str(exc))
+            return
+
         identity = None
         if args.subtest in EVIDENCE_SUBTESTS:
             try:
@@ -321,6 +342,9 @@ def main() -> None:
                 )
                 print(json.dumps({"status": "refused", "reason": f"{exc} Nothing was executed."}))
                 return
+        elif not table_exists(cur, args.schema, args.table):
+            _refuse(cur, args, None, f"Table {args.schema}.{args.table} does not exist or is not visible to this role.")
+            return
 
         dataset_id = base.get_or_register_dataset(cur, args.schema, args.table, ACTOR)
 
@@ -364,6 +388,15 @@ def main() -> None:
                     "reason": f"--distinct-of column '{args.distinct_of}' does not exist on "
                               f"{args.schema}.{args.table}. Nothing was executed.",
                 }))
+                return
+
+        if args.subtest == "cross-dataset-match" and args.right_table and args.right_column:
+            rschema = args.right_schema or args.schema
+            if not table_exists(cur, rschema, args.right_table):
+                _refuse(cur, args, dataset_id, f"Right table {rschema}.{args.right_table} does not exist or is not visible to this role.")
+                return
+            if base.column_info(cur, rschema, args.right_table, args.right_column) is None:
+                _refuse(cur, args, dataset_id, f"Column '{args.right_column}' does not exist on {rschema}.{args.right_table}.")
                 return
 
         module = DISPATCH[args.subtest]

@@ -1,6 +1,26 @@
 # Changelog
 
 ## [Unreleased]
+- **Security: caller-supplied names can no longer run extra SQL.** Schema, table and column
+  names (from a user or an LLM) were pasted into SQL text at 30+ sites, some with no quoting at
+  all. Verified exploitable: a crafted `--table` inserted a forged row into the append-only
+  `audit_log` while the engine reported "refused". Every name now goes through
+  `core/sqlsafe.py` (`ident()`), which validates it and lets psycopg2 quote it.
+- Names that cannot be made safe are refused with a reason instead of guessed at: empty, NUL,
+  over 63 bytes (PostgreSQL silently truncates longer identifiers and could hit a different
+  column), and any containing `%`.
+- Legal but awkward names now work. Before, a table with a quote or space in its name crashed
+  the engine, and `benford` never quoted its column at all, so mixed-case columns failed.
+- `--right-table`, `--right-column` and `--right-schema` were never validated. They are now
+  checked for existence and refused cleanly. A table that does not exist is refused for every
+  subtest, not only the evidence-writing ones.
+- Refusals for unsafe names are audit-logged, since an attempt is evidence too.
+- The three copies of the text-normalisation expression are now one (`sqlsafe.norm_expr`).
+- Query results are unchanged: 12 read-only comparisons against values recorded before the
+  change all match on real data.
+- New `tests_engine/test_identifier_safety.py` (36 checks). Run against the previous engine
+  version, 18 of them fail.
+
 - **Evidence now identifies rows by primary key, not `_row_no`.** Before, `duplicate-analysis`,
   `fuzzy-entity-match` and `cross-dataset-match` selected a `_row_no` column that only exists in
   tables our own Excel ingestion created. On any native table they failed, and

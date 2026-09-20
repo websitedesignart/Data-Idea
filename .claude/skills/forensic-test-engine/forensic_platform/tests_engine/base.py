@@ -10,6 +10,9 @@ import json
 from pathlib import Path
 
 import yaml
+from psycopg2 import sql
+
+from ..core.sqlsafe import ident
 
 REGISTRY_PATH = Path(__file__).resolve().parents[1] / "registry" / "test_registry.yaml"
 
@@ -51,14 +54,14 @@ def get_or_register_dataset(cur, schema: str, table: str, actor: str) -> int:
     row = cur.fetchone()
     if row:
         dataset_id, recorded_rows = row
-        cur.execute(f'SELECT count(*) FROM "{schema}"."{table}"')
+        cur.execute(sql.SQL("SELECT count(*) FROM {}").format(ident(schema, table)))
         if cur.fetchone()[0] == recorded_rows:
             return dataset_id
         # fall through: source no longer matches its registered version
 
     from ..core.hashing import column_signature
 
-    cur.execute(f"SELECT count(*) FROM {schema}.{table}")
+    cur.execute(sql.SQL("SELECT count(*) FROM {}").format(ident(schema, table)))
     row_count = cur.fetchone()[0]
     cur.execute(
         "SELECT column_name, data_type FROM information_schema.columns WHERE table_schema=%s AND table_name=%s",

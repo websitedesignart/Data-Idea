@@ -28,6 +28,8 @@ from dataclasses import dataclass
 
 from psycopg2 import sql
 
+from .sqlsafe import ident
+
 ENGINE_ROW_NO = "_row_no"
 
 
@@ -42,7 +44,7 @@ class RowIdentity:
 
     def select_list(self) -> sql.Composable:
         """The identity columns as a safely quoted, comma-separated SELECT list."""
-        return sql.SQL(", ").join(sql.Identifier(c) for c in self.columns)
+        return sql.SQL(", ").join(ident(c) for c in self.columns)
 
     def encode(self, values) -> tuple[str, str]:
         """(source_pk_column, source_pk_value) exactly as stored in evidence_links."""
@@ -72,7 +74,7 @@ def decode(source_pk_column: str, source_pk_value: str) -> dict[str, str]:
 
 def resolve_row_identity(cur, schema: str, table: str) -> RowIdentity:
     """Return the identity to use for `schema.table`, or raise NoRowIdentity."""
-    qualified = sql.Identifier(schema, table).as_string(cur)
+    qualified = ident(schema, table).as_string(cur)
 
     cur.execute("SELECT to_regclass(%s)", (qualified,))
     if cur.fetchone()[0] is None:
@@ -98,7 +100,7 @@ def resolve_row_identity(cur, schema: str, table: str) -> RowIdentity:
         col = sql.Identifier(ENGINE_ROW_NO)
         cur.execute(
             sql.SQL("SELECT count(*), count(DISTINCT {c}), count(*) FILTER (WHERE {c} IS NULL) FROM {t}")
-            .format(c=col, t=sql.Identifier(schema, table))
+            .format(c=col, t=ident(schema, table))
         )
         total, distinct, nulls = cur.fetchone()
         if nulls == 0 and distinct == total:

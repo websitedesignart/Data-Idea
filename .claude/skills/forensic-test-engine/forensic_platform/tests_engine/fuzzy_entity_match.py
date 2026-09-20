@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 from psycopg2 import sql
 
 from ..core.identity import RowIdentity, resolve_row_identity
+from ..core.sqlsafe import ident, norm_expr
 
 TEST_NAME = "fuzzy-entity-match"
 TEST_VERSION = "1.0.0"
@@ -131,10 +132,6 @@ def cluster_names(names: list[str], threshold: float) -> list[list[str]]:
     return [buckets[k] for k in sorted(buckets)]
 
 
-def _norm_sql(col: str) -> str:
-    return f"upper(regexp_replace(btrim({col}::text), '\\s+', ' ', 'g'))"
-
-
 def run(
     cur,
     schema: str,
@@ -151,29 +148,32 @@ def run(
     """`column` is the identifier (e.g. reg_no); `distinct_of` is the name column."""
     # Resolve first so a table with no usable row identity fails up front. Raises NoRowIdentity.
     identity = identity or resolve_row_identity(cur, schema, table)
-    key = _norm_sql(f'"{column}"')
-    val = _norm_sql(f'"{distinct_of}"')
+    # Every caller-supplied name goes through ident() (validated + quoted), never into SQL text.
+    tbl = ident(schema, table)
+    key = norm_expr(ident(column))
+    val = norm_expr(ident(distinct_of))
 
     params: list = []
-    ph = ""
+    ph = sql.SQL("")
     if exclude_placeholders:
-        ph = f" AND {key} <> ALL(%s)"
+        ph = sql.SQL(" AND {} <> ALL(%s)").format(key)
         params.append(DEFAULT_PLACEHOLDERS)
     if require_digit:
         # See duplicate_analysis: a digitless identifier is free text, not an identifier.
-        ph += " AND {} ~ '[0-9]'".format(key)
+        ph += sql.SQL(" AND {} ~ '[0-9]'").format(key)
 
-    cur.execute(f'SELECT count(*) FROM "{schema}"."{table}"')
+    cur.execute(sql.SQL("SELECT count(*) FROM {}").format(tbl))
     records_examined = cur.fetchone()[0]
 
-    query = (
-        f'SELECT {key} AS key_value, {val} AS name_value, count(*) AS n\n'
-        f'FROM "{schema}"."{table}"\n'
-        f'WHERE {key} IS NOT NULL AND {key} <> \'\'{ph}\n'
-        f'  AND {val} IS NOT NULL AND {val} <> \'\'\n'
-        f'GROUP BY 1, 2'
-    )
-    cur.execute(query, params)
+    composed = sql.SQL(
+        "SELECT {k} AS key_value, {v} AS name_value, count(*) AS n\n"
+        "FROM {t}\n"
+        "WHERE {k} IS NOT NULL AND {k} <> ''{ph}\n"
+        "  AND {v} IS NOT NULL AND {v} <> ''\n"
+        "GROUP BY 1, 2"
+    ).format(k=key, v=val, t=tbl, ph=ph)
+    query = composed.as_string(cur)  # reproducible query text, stored and reported with the result
+    cur.execute(composed, params)
 
     by_key: dict[str, list[str]] = {}
     for key_value, name_value, _ in cur.fetchall():
@@ -200,10 +200,8 @@ def run(
         keys = [f[0] for f in flagged]
         pk = identity.select_list()
         cur.execute(
-            sql.SQL("SELECT ") + pk
-            + sql.SQL(" FROM ") + sql.Identifier(schema, table)
-            + sql.SQL(f" WHERE {key} = ANY(%s) ORDER BY ") + pk
-            + sql.SQL(" LIMIT %s"),
+            sql.SQL("SELECT {pk} FROM {t} WHERE {k} = ANY(%s) ORDER BY {pk} LIMIT %s")
+            .format(pk=pk, t=tbl, k=key),
             [keys, evidence_limit],
         )
         evidence = [tuple(r) for r in cur.fetchall()]

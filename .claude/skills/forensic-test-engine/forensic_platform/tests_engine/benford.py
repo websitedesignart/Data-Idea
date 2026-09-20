@@ -13,6 +13,10 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
+from psycopg2 import sql
+
+from ..core.sqlsafe import ident
+
 TEST_NAME = "benford"
 TEST_VERSION = "1.0.0"
 
@@ -34,17 +38,18 @@ class BenfordResult:
     query_text: str
 
 
-def _leading_digit_query(schema: str, table: str, column: str) -> str:
-    return (
-        f"SELECT left(regexp_replace(abs(({column})::numeric)::text, '[^0-9]', '', 'g'), 1) AS digit, "
-        f"count(*) AS n "
-        f"FROM {schema}.{table} "
-        f"WHERE {column} IS NOT NULL AND {column} <> 0 "
-        f"GROUP BY 1 "
-        f"HAVING left(regexp_replace(abs(({column})::numeric)::text, '[^0-9]', '', 'g'), 1) "
-        f"IN ('1','2','3','4','5','6','7','8','9') "
-        f"ORDER BY 1"
-    )
+def _leading_digit_query(schema: str, table: str, column: str) -> sql.Composable:
+    # Names are validated and quoted by psycopg2, never pasted into the SQL text.
+    return sql.SQL(
+        "SELECT left(regexp_replace(abs(({c})::numeric)::text, '[^0-9]', '', 'g'), 1) AS digit, "
+        "count(*) AS n "
+        "FROM {t} "
+        "WHERE {c} IS NOT NULL AND {c} <> 0 "
+        "GROUP BY 1 "
+        "HAVING left(regexp_replace(abs(({c})::numeric)::text, '[^0-9]', '', 'g'), 1) "
+        "IN ('1','2','3','4','5','6','7','8','9') "
+        "ORDER BY 1"
+    ).format(c=ident(column), t=ident(schema, table))
 
 
 def _mad_conformity(mad: float) -> str:
@@ -59,8 +64,9 @@ def _mad_conformity(mad: float) -> str:
 
 
 def run(cur, schema: str, table: str, column: str) -> BenfordResult:
-    query = _leading_digit_query(schema, table, column)
-    cur.execute(query)
+    composed = _leading_digit_query(schema, table, column)
+    query = composed.as_string(cur)  # reproducible query text, stored and reported with the result
+    cur.execute(composed)
     rows = cur.fetchall()
 
     digit_counts = {int(d): int(n) for d, n in rows}

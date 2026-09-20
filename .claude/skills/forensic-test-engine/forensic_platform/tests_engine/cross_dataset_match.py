@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from psycopg2 import sql
 
 from ..core.identity import RowIdentity, resolve_row_identity
+from ..core.sqlsafe import ident, norm_expr
 
 TEST_NAME = "cross-dataset-match"
 TEST_VERSION = "1.0.0"
@@ -53,10 +54,6 @@ class CrossMatchResult:
     identity: RowIdentity | None = None
 
 
-def _norm(col: str) -> str:
-    return f"upper(regexp_replace(btrim({col}::text), '\\s+', ' ', 'g'))"
-
-
 def run(
     cur,
     schema: str,
@@ -74,59 +71,62 @@ def run(
     # the reconciliation has already been computed. Raises NoRowIdentity.
     identity = identity or resolve_row_identity(cur, schema, table)
     rschema = right_schema or schema
-    lkey = _norm(f'"{column}"')
-    rkey = _norm(f'"{right_column}"')
+    # Every caller-supplied name goes through ident() (validated + quoted), never into SQL text.
+    ltbl, rtbl = ident(schema, table), ident(rschema, right_table)
+    lkey = norm_expr(ident(column))
+    rkey = norm_expr(ident(right_column))
 
-    lfilter = f"{lkey} IS NOT NULL AND {lkey} <> ''"
-    rfilter = f"{rkey} IS NOT NULL AND {rkey} <> ''"
-    params: list = []
+    lfilter = sql.SQL("{k} IS NOT NULL AND {k} <> ''").format(k=lkey)
+    rfilter = sql.SQL("{k} IS NOT NULL AND {k} <> ''").format(k=rkey)
     if exclude_placeholders:
-        lfilter += f" AND {lkey} <> ALL(%s)"
-        rfilter += f" AND {rkey} <> ALL(%s)"
+        lfilter += sql.SQL(" AND {} <> ALL(%s)").format(lkey)
+        rfilter += sql.SQL(" AND {} <> ALL(%s)").format(rkey)
+    l_cte = sql.SQL("l AS (SELECT DISTINCT {k} k FROM {t} WHERE {f})").format(k=lkey, t=ltbl, f=lfilter)
+    r_cte = sql.SQL("r AS (SELECT DISTINCT {k} k FROM {t} WHERE {f})").format(k=rkey, t=rtbl, f=rfilter)
 
-    cur.execute(f'SELECT count(*) FROM "{schema}"."{table}"')
+    cur.execute(sql.SQL("SELECT count(*) FROM {}").format(ltbl))
     left_rows = cur.fetchone()[0]
-    cur.execute(f'SELECT count(*) FROM "{rschema}"."{right_table}"')
+    cur.execute(sql.SQL("SELECT count(*) FROM {}").format(rtbl))
     right_rows = cur.fetchone()[0]
 
     lp = [DEFAULT_PLACEHOLDERS] if exclude_placeholders else []
-    cur.execute(f'SELECT count(DISTINCT {lkey}) FROM "{schema}"."{table}" WHERE {lfilter}', lp)
+    both = lp + lp  # each CTE carries one placeholder-exclusion parameter
+    cur.execute(
+        sql.SQL("SELECT count(DISTINCT {k}) FROM {t} WHERE {f}").format(k=lkey, t=ltbl, f=lfilter), lp)
     left_distinct = cur.fetchone()[0]
     cur.execute(
-        f'SELECT count(DISTINCT {rkey}) FROM "{rschema}"."{right_table}" WHERE {rfilter}', lp)
+        sql.SQL("SELECT count(DISTINCT {k}) FROM {t} WHERE {f}").format(k=rkey, t=rtbl, f=rfilter), lp)
     right_distinct = cur.fetchone()[0]
 
-    query = (
-        f'WITH l AS (SELECT DISTINCT {lkey} k FROM "{schema}"."{table}" WHERE {lfilter}),\n'
-        f'     r AS (SELECT DISTINCT {rkey} k FROM "{rschema}"."{right_table}" WHERE {rfilter})\n'
-        f'SELECT (SELECT count(*) FROM l JOIN r USING (k)),\n'
-        f'       (SELECT count(*) FROM l WHERE k NOT IN (SELECT k FROM r)),\n'
-        f'       (SELECT count(*) FROM r WHERE k NOT IN (SELECT k FROM l))'
-    )
-    cur.execute(query, lp + lp if exclude_placeholders else [])
+    composed = sql.SQL(
+        "WITH {l},\n"
+        "     {r}\n"
+        "SELECT (SELECT count(*) FROM l JOIN r USING (k)),\n"
+        "       (SELECT count(*) FROM l WHERE k NOT IN (SELECT k FROM r)),\n"
+        "       (SELECT count(*) FROM r WHERE k NOT IN (SELECT k FROM l))"
+    ).format(l=l_cte, r=r_cte)
+    query = composed.as_string(cur)  # reproducible query text, stored and reported with the result
+    cur.execute(composed, both)
     in_both, only_left, only_right = cur.fetchone()
 
     cur.execute(
-        f'WITH r AS (SELECT DISTINCT {rkey} k FROM "{rschema}"."{right_table}" WHERE {rfilter})\n'
-        f'SELECT DISTINCT {lkey} FROM "{schema}"."{table}" WHERE {lfilter} '
-        f'AND {lkey} NOT IN (SELECT k FROM r) ORDER BY 1 LIMIT 25', lp + lp if exclude_placeholders else [])
+        sql.SQL("WITH {r}\nSELECT DISTINCT {lk} FROM {lt} WHERE {lf} "
+                "AND {lk} NOT IN (SELECT k FROM r) ORDER BY 1 LIMIT 25")
+        .format(r=r_cte, lk=lkey, lt=ltbl, lf=lfilter), both)
     sample_left = [r[0] for r in cur.fetchall()]
 
     cur.execute(
-        f'WITH l AS (SELECT DISTINCT {lkey} k FROM "{schema}"."{table}" WHERE {lfilter})\n'
-        f'SELECT DISTINCT {rkey} FROM "{rschema}"."{right_table}" WHERE {rfilter} '
-        f'AND {rkey} NOT IN (SELECT k FROM l) ORDER BY 1 LIMIT 25', lp + lp if exclude_placeholders else [])
+        sql.SQL("WITH {l}\nSELECT DISTINCT {rk} FROM {rt} WHERE {rf} "
+                "AND {rk} NOT IN (SELECT k FROM l) ORDER BY 1 LIMIT 25")
+        .format(l=l_cte, rk=rkey, rt=rtbl, rf=rfilter), both)
     sample_right = [r[0] for r in cur.fetchall()]
 
     pk = identity.select_list()
     cur.execute(
-        sql.SQL(f'WITH r AS (SELECT DISTINCT {rkey} k FROM "{rschema}"."{right_table}" WHERE {rfilter})\nSELECT ')
-        + pk
-        + sql.SQL(" FROM ") + sql.Identifier(schema, table)
-        + sql.SQL(f" WHERE {lfilter} AND {lkey} NOT IN (SELECT k FROM r) ORDER BY ")
-        + pk
-        + sql.SQL(" LIMIT %s"),
-        (lp + lp if exclude_placeholders else []) + [evidence_limit])
+        sql.SQL("WITH {r}\nSELECT {pk} FROM {lt} WHERE {lf} "
+                "AND {lk} NOT IN (SELECT k FROM r) ORDER BY {pk} LIMIT %s")
+        .format(r=r_cte, pk=pk, lt=ltbl, lf=lfilter, lk=lkey),
+        both + [evidence_limit])
     evidence = [tuple(r) for r in cur.fetchall()]
 
     return CrossMatchResult(

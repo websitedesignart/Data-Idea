@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from psycopg2 import sql
 
 from ..core.identity import RowIdentity, resolve_row_identity
+from ..core.sqlsafe import ident, norm_expr
 
 TEST_NAME = "duplicate-analysis"
 TEST_VERSION = "1.0.0"
@@ -50,11 +51,6 @@ class DuplicateResult:
     identity: RowIdentity | None = None
 
 
-def _norm(col: str) -> str:
-    """SQL normalisation expression, matching the Python analysis exactly."""
-    return f"upper(regexp_replace(btrim({col}::text), '\\s+', ' ', 'g'))"
-
-
 def run(
     cur,
     schema: str,
@@ -70,53 +66,55 @@ def run(
     # Resolve first: a table with no usable row identity must fail up front, not only once
     # something is flagged and evidence is needed. Raises NoRowIdentity.
     identity = identity or resolve_row_identity(cur, schema, table)
-    key = _norm(f'"{column}"')
+    # Every caller-supplied name goes through ident() (validated + quoted), never into SQL text.
+    tbl = ident(schema, table)
+    key = norm_expr(ident(column))
     mode = "shared_identifier" if distinct_of else "duplicate"
 
-    ph_clause = ""
+    ph_clause = sql.SQL("")
     params: list = []
     if exclude_placeholders:
-        ph_clause = f" AND {key} <> ALL(%s)"
+        ph_clause = sql.SQL(" AND {} <> ALL(%s)").format(key)
         params.append(DEFAULT_PLACEHOLDERS)
     if require_digit:
         # A registration/certificate number without a single digit is free text in a
         # numeric field ('MCI', 'HOSPITAL', a surname), not an identifier. Structural
         # rule, preferred over an endlessly growing denylist.
-        ph_clause += " AND {} ~ '[0-9]'".format(key)
+        ph_clause += sql.SQL(" AND {} ~ '[0-9]'").format(key)
 
-    cur.execute(f'SELECT count(*) FROM "{schema}"."{table}"')
+    cur.execute(sql.SQL("SELECT count(*) FROM {}").format(tbl))
     records_examined = cur.fetchone()[0]
 
     placeholders_excluded = 0
     if exclude_placeholders:
         cur.execute(
-            f'SELECT count(*) FROM "{schema}"."{table}" WHERE {key} = ANY(%s)',
+            sql.SQL("SELECT count(*) FROM {t} WHERE {k} = ANY(%s)").format(t=tbl, k=key),
             [DEFAULT_PLACEHOLDERS],
         )
         placeholders_excluded = cur.fetchone()[0]
 
-    base_where = f"{key} IS NOT NULL AND {key} <> ''{ph_clause}"
+    base_where = sql.SQL("{k} IS NOT NULL AND {k} <> ''").format(k=key) + ph_clause
 
     if distinct_of:
-        measure = f'count(DISTINCT {_norm(chr(34) + distinct_of + chr(34))})'
-        having = f"{measure} >= %s"
+        measure = sql.SQL("count(DISTINCT {})").format(norm_expr(ident(distinct_of)))
     else:
-        measure = "count(*)"
-        having = f"{measure} >= %s"
+        measure = sql.SQL("count(*)")
 
-    query = (
-        f'SELECT {key} AS key_value, count(*) AS row_count, {measure} AS measure_value\n'
-        f'FROM "{schema}"."{table}"\n'
-        f'WHERE {base_where}\n'
-        f'GROUP BY {key}\n'
-        f'HAVING {having}\n'
-        f'ORDER BY {measure} DESC, count(*) DESC'
-    )
-    cur.execute(query, params + [min_occurrences])
+    composed = sql.SQL(
+        "SELECT {k} AS key_value, count(*) AS row_count, {m} AS measure_value\n"
+        "FROM {t}\n"
+        "WHERE {w}\n"
+        "GROUP BY {k}\n"
+        "HAVING {m} >= %s\n"
+        "ORDER BY {m} DESC, count(*) DESC"
+    ).format(k=key, m=measure, t=tbl, w=base_where)
+    query = composed.as_string(cur)  # reproducible query text, stored and reported with the result
+    cur.execute(composed, params + [min_occurrences])
     groups = cur.fetchall()
 
     cur.execute(
-        f'SELECT count(DISTINCT {key}) FROM "{schema}"."{table}" WHERE {base_where}', params)
+        sql.SQL("SELECT count(DISTINCT {k}) FROM {t} WHERE {w}").format(k=key, t=tbl, w=base_where),
+        params)
     keys_examined = cur.fetchone()[0]
 
     flagged_keys = len(groups)
@@ -133,10 +131,8 @@ def run(
         keys = [g[0] for g in groups]
         pk = identity.select_list()
         cur.execute(
-            sql.SQL("SELECT ") + pk
-            + sql.SQL(" FROM ") + sql.Identifier(schema, table)
-            + sql.SQL(f" WHERE {key} = ANY(%s) ORDER BY {key}, ") + pk
-            + sql.SQL(" LIMIT %s"),
+            sql.SQL("SELECT {pk} FROM {t} WHERE {k} = ANY(%s) ORDER BY {k}, {pk} LIMIT %s")
+            .format(pk=pk, t=tbl, k=key),
             [keys, evidence_limit],
         )
         evidence = [tuple(r) for r in cur.fetchall()]

@@ -115,3 +115,7 @@ repository.
   hasn't been tested end to end yet.
 - Short names one letter apart (e.g. `ALICE ROY` / `ALICE RAY`) stay separate at the default
   0.55 threshold. That's deliberate: they could be different people.
+- Schema, table and column names are quoted safely, so quotes, spaces, reserved words and
+  non-ASCII all work. Names that are empty, longer than 63 bytes, or contain `%` are refused.
+- `benford` reads the leading digit from the text of the number, so values below 1 (e.g. `0.5`)
+  currently read as leading digit `0` and are left out of the test. Known and unchanged.
