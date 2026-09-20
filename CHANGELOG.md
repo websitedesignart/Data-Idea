@@ -1,6 +1,27 @@
 # Changelog
 
 ## [Unreleased]
+- **A profiler and role suggestions** (`core/profile.py`, `core/roles.py`, no new libraries). A
+  table is measured once (one aggregate scan per batch of 60 columns) for exactly the facts
+  suitability rules ask for: eligible and distinct counts, magnitude span, nonpositive and integer
+  share, null rate, primary and foreign keys from the catalog, and the share of rows shaped like
+  an Aadhaar number, PAN, IFSC, mobile number or e-mail. Only counts, shares and ranges leave the
+  profiler, never a data value. It is read-only, runs in the caller's session (so the statement
+  timeout applies), and refuses a table estimated over 2,000,000 rows unless explicitly allowed.
+- Roles are suggestions, bindings and facts, kept apart. A suggestion carries evidence tokens and a
+  strong/medium/weak label (a count of corroborating evidence, not a probability) and binds
+  nothing. Only `Bindings.confirm(role, column, confirmed_by)` binds, and it needs a named person.
+  `facts_for()` hands a rule set column measurements only for a confirmed column, because for an
+  unconfirmed one they may describe the wrong column. A column that looks sensitive (by name or by
+  pattern share) is never suggested as an amount, name or identifier, and is flagged for masking.
+- Measured read-only against a real payroll-invoicing database in a session forced read-only: all
+  12 tables profiled in about 1 s in total (largest, 7,234 rows and 30 columns, under 1 s), and its
+  write counters were unchanged afterwards. That run showed page and serial-number columns being
+  suggested as amounts, so an unnamed whole-number column is now no longer suggested, and tax and
+  charge names count as amount evidence.
+- New `tests_engine/test_profile.py` (65 checks: unit tests plus a scratch database). Eleven
+  deliberate weakenings were tried and the first pass missed two (a sensitive column also suggested
+  as an amount, and a wrong top-10 share); tests were added, and all twelve are now caught.
 - **A suitability framework: should this method run on this data at all?**
   (`core/suitability.py`, standard library only.) A method declares rules over named, *measured*
   facts, and the pure function `assess()` returns one of `SUPPORTED`, `SUPPORTED_WITH_WARNING`,
