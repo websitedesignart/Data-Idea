@@ -79,7 +79,7 @@ def integration_tests():
 
         def run(table, column="amount"):
             p = subprocess.run([sys.executable, str(ENGINE / "scripts" / "run_test.py"), "--database", scratch,
-                                "--schema", "public", "--subtest", "benford", "--table", table, "--column", column],
+                                "--schema", "public", "--subtest", "benford", "--confirmed-by", "tester", "--allow-unsuitable", "--table", table, "--column", column],
                                capture_output=True, text=True, env=env)
             try:
                 return json.loads(p.stdout)

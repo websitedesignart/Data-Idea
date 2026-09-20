@@ -158,25 +158,25 @@ def integration_tests():
 
         print("\n=== a bad setting is refused up front ===")
         for bad in ("abc", "-5", "1.5"):
-            out, _, _, _ = run({"FORENSIC_STATEMENT_TIMEOUT_MS": bad}, "--subtest", "benford", "--table", "t_pk", "--column", "amount")
+            out, _, _, _ = run({"FORENSIC_STATEMENT_TIMEOUT_MS": bad}, "--subtest", "benford", "--confirmed-by", "tester", "--allow-unsuitable", "--table", "t_pk", "--column", "amount")
             check(f"FORENSIC_STATEMENT_TIMEOUT_MS={bad!r} -> refused, names the setting",
                   out.get("status") == "refused" and "FORENSIC_STATEMENT_TIMEOUT_MS" in out.get("reason", ""), out.get("reason"))
 
         print("\n=== normal runs are unaffected ===")
-        out, _, _, _ = run({}, "--subtest", "benford", "--table", "t_pk", "--column", "amount")
+        out, _, _, _ = run({}, "--subtest", "benford", "--confirmed-by", "tester", "--allow-unsuitable", "--table", "t_pk", "--column", "amount")
         check("benford runs under the default limits", (out.get("status"), out.get("records_examined")) == ("success", 400), out.get("reason") or out.get("stderr_chars"))
 
         print("\n=== a runaway query is cancelled, reported compactly, and logged ===")
         runs_before = scalar("SELECT count(*) FROM _forensic.test_runs")
         findings_before = scalar("SELECT count(*) FROM _forensic.findings")
-        out, secs, olen, elen = run({"FORENSIC_STATEMENT_TIMEOUT_MS": "1000"}, "--subtest", "benford", "--table", "v_slow_count", "--column", "amount")
+        out, secs, olen, elen = run({"FORENSIC_STATEMENT_TIMEOUT_MS": "1000"}, "--subtest", "benford", "--confirmed-by", "tester", "--allow-unsuitable", "--table", "v_slow_count", "--column", "amount")
         check("timeout while registering the dataset -> compact error, no traceback",
               out.get("status") == "error" and out.get("code") == "STATEMENT_TIMEOUT" and elen == 0, (out.get("status"), out.get("code"), f"stderr={elen}"))
         check("cancelled after ~1 s, not after the ~10 s the query wanted", secs < 7, f"{secs:.1f}s")
         check("error output is short (<800 chars) and contains no SQL", olen < 800 and "SELECT" not in json.dumps(out), olen)
         check("the failure is in the audit log", scalar("SELECT count(*) FROM _forensic.audit_log WHERE status='error' AND error_text LIKE 'STATEMENT_TIMEOUT:%'") == 1)
 
-        out, secs, olen, elen = run({"FORENSIC_STATEMENT_TIMEOUT_MS": "700"}, "--subtest", "benford", "--table", "v_slow_test", "--column", "amount")
+        out, secs, olen, elen = run({"FORENSIC_STATEMENT_TIMEOUT_MS": "700"}, "--subtest", "benford", "--confirmed-by", "tester", "--allow-unsuitable", "--table", "v_slow_test", "--column", "amount")
         check("timeout INSIDE the test -> compact error, no traceback",
               out.get("status") == "error" and out.get("code") == "STATEMENT_TIMEOUT" and elen == 0, (out.get("status"), out.get("code"), out.get("reason"), f"stderr={elen}"))
         check("cancelled promptly", secs < 7, f"{secs:.1f}s")
@@ -192,14 +192,14 @@ def integration_tests():
         holder = psycopg2.connect(superuser_dsn(scratch))
         holder.autocommit = False
         holder.cursor().execute("LOCK TABLE t_pk IN ACCESS EXCLUSIVE MODE")
-        out, secs, olen, elen = run({"FORENSIC_LOCK_TIMEOUT_MS": "700"}, "--subtest", "benford", "--table", "t_pk", "--column", "amount", timeout=30)
+        out, secs, olen, elen = run({"FORENSIC_LOCK_TIMEOUT_MS": "700"}, "--subtest", "benford", "--confirmed-by", "tester", "--allow-unsuitable", "--table", "t_pk", "--column", "amount", timeout=30)
         check("lock held by another session -> LOCK_TIMEOUT, compact, no traceback",
               out.get("status") == "error" and out.get("code") == "LOCK_TIMEOUT" and elen == 0, (out.get("status"), out.get("code"), f"stderr={elen}"))
         check("gave up after ~0.7 s instead of waiting forever", secs < 10, f"{secs:.1f}s")
         holder.rollback()
         holder.close()
         holder = None
-        out, _, _, _ = run({}, "--subtest", "benford", "--table", "t_pk", "--column", "amount")
+        out, _, _, _ = run({}, "--subtest", "benford", "--confirmed-by", "tester", "--allow-unsuitable", "--table", "t_pk", "--column", "amount")
         check("once the lock is released the same test succeeds", out.get("status") == "success", out.get("reason"))
     finally:
         if holder is not None:

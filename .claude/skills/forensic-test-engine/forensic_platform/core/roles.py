@@ -34,6 +34,8 @@ _TOKENS = {
     "date": {"date", "dt", "dob", "doj", "period", "month", "year", "day", "timestamp", "time"},
     "entity_name": {"name", "employee", "vendor", "beneficiary", "payee", "supplier", "party", "holder", "firm"},
     "identifier": {"id", "no", "number", "code", "ref", "reference", "uid", "key", "serial", "sr"},
+    # names of counters and positions: whole numbers under these names are numbering, not money
+    "counter": {"sno", "srno", "slno", "sl", "sr", "seq", "sequence", "index", "idx", "serial", "page", "row", "line", "rank"},
     "sensitive_id": {"aadhaar", "aadhar", "uidai", "pan", "ifsc", "account", "acct", "mobile", "phone",
                      "email", "passport", "voter", "licence", "license"},
 }
@@ -236,4 +238,10 @@ def facts_for(profile: TableProfile, bindings: Bindings, ruleset: RuleSet, role:
         for fact in wanted:
             if fact in _COLUMN_FACTS and values.get(fact) is not None:
                 facts[fact] = values[fact]
+        if "identifier_like" in wanted:
+            # an assigned number, not a measured amount: a key, a sensitive identifier, or a serial
+            whole = col.metrics.get("integer_share") == 1.0
+            facts["identifier_like"] = bool(col.is_pk or column in sensitive_columns(profile)
+                                            or (whole and (col.is_unique or (name_tokens(column) & _TOKENS["counter"]
+                                                                          and not name_tokens(column) & _TOKENS["amount"]))))
     return facts

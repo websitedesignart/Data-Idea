@@ -196,7 +196,7 @@ def integration_tests():
         check("each refusal is still audit-logged", cur.fetchone()[0] == 4)
 
         print("\n=== regression: tests without evidence are unaffected ===")
-        r = run("--subtest", "benford", "--table", "t_num", "--column", "amount")
+        r = run("--subtest", "benford", "--confirmed-by", "tester", "--allow-unsuitable", "--table", "t_num", "--column", "amount")
         check("benford still runs", r.get("status") == "success" and r.get("records_examined") == 400, r.get("reason") or r.get("records_examined"))
     finally:
         if conn is not None:

@@ -232,7 +232,7 @@ def integration_tests():
             records_scanned=res.records_examined, findings_count=len(sigs) or 1 if anomalous else 0,
             summary={"mad": round(res.mad, 5), "chi_square": round(res.chi_square, 2),
                      "conformity": res.conformity.replace(" ", "_"), "reliable": res.reliable_sample_size},
-            signals=sigs), ["--subtest", "benford", "--table", "t_num", "--column", "amount"]))
+            signals=sigs), ["--subtest", "benford", "--confirmed-by", "tester", "--allow-unsuitable", "--table", "t_num", "--column", "amount"]))
 
         res = duplicate_analysis.run(cur, "public", "t_people", "reg", distinct_of="name")
         raw_dup_keys = [g["key_value"] for g in res.top_groups]

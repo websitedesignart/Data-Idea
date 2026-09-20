@@ -24,6 +24,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from forensic_platform.core.config import forensic_dsn
 from forensic_platform.core.db import connect, describe_db_error, timeouts
 from forensic_platform.core import masking
+from forensic_platform.core.contract import Verdict
+from forensic_platform.core.guard import assess_column
 from forensic_platform.core.identity import NoRowIdentity, resolve_row_identity
 from forensic_platform.core.sqlsafe import UnsafeIdentifier, check_identifier, table_exists
 from forensic_platform.tests_engine import base
@@ -334,6 +336,12 @@ def main() -> None:
     parser.add_argument("--threshold", type=float, default=0.55,
                         help="fuzzy-entity-match: similarity threshold for treating two "
                              "names as the same entity")
+    parser.add_argument("--confirmed-by", default=None,
+                        help="benford: name of the person who confirmed --column is an amount. Without "
+                             "it the test is declined (REQUIRES_CONFIRMATION). Pass only a name the user gave")
+    parser.add_argument("--allow-unsuitable", action="store_true",
+                        help="benford: run even though the column is INSUFFICIENT_DATA or NOT_APPLICABLE. "
+                             "The result is capped at OBSERVATION and says so. Never overrides a confirmation")
     parser.add_argument("--reveal-values", action="store_true",
                         help="Show raw key values instead of masked references. Honoured only when "
                              "neither the column nor its values look sensitive")
@@ -518,6 +526,20 @@ def _execute(args) -> None:
                     identity=identity,
                 )
             else:
+                suitability = assess_column(cur, benford.RULESET, args.schema, args.table, args.column,
+                                            role="amount", confirmed_by=args.confirmed_by)
+                overridden = (not suitability.runnable and args.allow_unsuitable
+                              and suitability.verdict in (Verdict.INSUFFICIENT_DATA, Verdict.NOT_APPLICABLE))
+                if not suitability.runnable and not overridden:
+                    declined = suitability.to_declined().to_dict()
+                    if suitability.verdict is Verdict.REQUIRES_CONFIRMATION:
+                        declined["next"] = "ask the user to confirm the column is an amount, then pass --confirmed-by <their name>"
+                    elif suitability.verdict in (Verdict.INSUFFICIENT_DATA, Verdict.NOT_APPLICABLE):
+                        declined["next"] = "do not run; --allow-unsuitable runs it as an OBSERVATION only, if the user insists"
+                    base.log_audit(cur, ACTOR, f"run:{args.subtest}", dataset_id, __file__, vars(args), "declined",
+                                   error_text=",".join(suitability.reason_codes))
+                    print(json.dumps(declined, separators=(",", ":")))
+                    return
                 result = module.run(cur, args.schema, args.table, args.column)
         except Exception as exc:
             if isinstance(exc, psycopg2.Error):
@@ -557,7 +579,12 @@ def _execute(args) -> None:
         )
 
         findings = []
-        if not result.reliable_sample_size:
+        if overridden:
+            desc = (f"Run despite {','.join(suitability.reason_codes)} at the user's request (--allow-unsuitable). "
+                    f"First-digit MAD={result.mad:.5f} (n={result.records_examined}) is reported for reference only "
+                    f"and is not to be read as conformity or nonconformity.")
+            findings.append(base.record_finding(cur, run_id, "OBSERVATION", desc))
+        elif not result.reliable_sample_size:
             desc = (
                 f"Only {result.records_examined} usable values in {args.schema}.{args.table}.{args.column} "
                 f"(Nigrini's guidance recommends >= {benford.MIN_RELIABLE_SAMPLE} for a reliable first-digit test). "
@@ -595,6 +622,9 @@ def _execute(args) -> None:
             "conformity": result.conformity,
             "reliable_sample_size": result.reliable_sample_size,
             "finding_ids": findings,
+            "suitability": {"verdict": suitability.verdict.value, "why": list(suitability.reason_codes),
+                            "thresholds": "unvalidated" if suitability.unvalidated else "validated",
+                            **({"overridden": True} if overridden else {}), "confirmed_by": args.confirmed_by},
             "limitations": entry["limitations"],
             "query_text": result.query_text,
         }, indent=2))

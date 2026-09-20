@@ -2,7 +2,7 @@ version: 1
 tests:
   benford:
     status: implemented
-    version: "1.0.0"
+    version: "1.1.0"
     module: forensic_platform.tests_engine.benford
     required_fields:
       - name: column
@@ -18,7 +18,11 @@ tests:
       tests yet). Not valid for columns with an artificially constrained range
       (sequential IDs, fixed-price items, assigned account codes). Small sample
       sizes (under ~300 usable values) produce unreliable MAD/chi-square results
-      per Nigrini's guidance and are flagged rather than scored.
+      per Nigrini's guidance are declined (INSUFFICIENT_DATA), as are columns that look
+      constrained or assigned (NOT_APPLICABLE); the thresholds are unvalidated starting
+      defaults. The column must be confirmed as an amount by a named person
+      (--confirmed-by) before the test runs. Values below 1 are counted by their first
+      significant digit (1.0.0 dropped them).
 
   duplicate-analysis:
     status: implemented

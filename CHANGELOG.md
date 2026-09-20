@@ -1,6 +1,36 @@
 # Changelog
 
 ## [Unreleased]
+- **Benford now checks that a column suits the test, and counts values below 1.** Before, it ran
+  on any numeric column and reported "nonconformity" for data where Benford's Law does not
+  apply, e.g. columns with a narrow or fixed set of values. It now declines with a reason
+  (`status: declined`, a verdict and short reason codes), using the suitability framework and the
+  profiler: `INSUFFICIENT_DATA` under 300 non-zero values; `NOT_APPLICABLE` for under 100
+  distinct values, a span under two orders of magnitude, ten values holding over 80% of rows,
+  or an identifier-like column (a key, a sensitive identifier, a unique whole-number column,
+  or whole numbers under a counter-style name such as `sno` or `page`, unless an amount word
+  is in the name); `SUPPORTED_WITH_WARNING` over 20% zero or negative values. All these
+  thresholds are unvalidated starting defaults, and the output says so.
+- The column must be confirmed as an amount by a named person: `--confirmed-by`. Without it the
+  test is declined (`REQUIRES_CONFIRMATION`) and the table is not even scanned. The name is
+  recorded in the audit log; the engine cannot verify who typed it, so the skill must pass only
+  a name the user gave. `--allow-unsuitable` runs an `INSUFFICIENT_DATA` or `NOT_APPLICABLE`
+  column anyway, but the result is capped at `OBSERVATION`, labelled as overridden, and can never
+  claim conformity or nonconformity. It cannot override a missing confirmation. Declines are
+  audit-logged (`declined`) and create no test run.
+- **Fixed: values below 1 were silently dropped.** The leading digit was read from the number's
+  text, so `0.0456` read as `0` and was excluded. It is now the first significant digit. Measured
+  read-only on the original payroll-invoicing database: 7,447 values across 5 numeric columns had
+  been dropped by version 1.0.0. Benford is now version 1.1.0.
+- Assessing all 111 numeric columns of that database as if each had been confirmed (read-only,
+  write counters unchanged): 74 `INSUFFICIENT_DATA`, 37 `NOT_APPLICABLE`, none runnable. An earlier
+  run of the same check showed a serial-number column (`sno`, restarting per invoice, so not unique)
+  passing as `SUPPORTED`; the counter-name rule above was added because of it, and the 22 columns
+  now flagged identifier-like are all keys, page numbers or serials. "None runnable" says this
+  data mostly does not suit the test at these unvalidated thresholds, not that the thresholds are right.
+- New `tests_engine/test_benford_guard.py` (49 checks). Eighteen deliberate weakenings were tried:
+  seventeen were caught, and the survivor is an equivalent mutation (a labelling change that alters no
+  behaviour). Test suites that use Benford only as a vehicle now pass the override flags explicitly.
 - **Identifiers are masked before they reach Claude** (`core/masking.py`). `top_groups` and
   `sample_only_*` used to print raw key values, Aadhaar-style numbers and bank accounts included.
   They are now 12-letter tokens: an HMAC-SHA256 of the normalised value under a per-project secret

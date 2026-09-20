@@ -144,8 +144,9 @@ def _aggregates(col: ColumnProfile) -> list[tuple[str, sql.Composable]]:
     return out
 
 
-def profile_table(cur, schema: str, table: str, *, allow_large: bool = False) -> TableProfile:
-    """Measure every column of schema.table. Read-only; counts and shares only."""
+def profile_table(cur, schema: str, table: str, *, allow_large: bool = False,
+                  columns: list[str] | None = None) -> TableProfile:
+    """Measure every column of schema.table (or only `columns`). Read-only; counts and shares only."""
     tbl = ident(schema, table)
 
     cur.execute("SELECT c.reltuples::bigint FROM pg_class c WHERE c.oid = to_regclass(%s)", (tbl.as_string(cur),))
@@ -158,7 +159,8 @@ def profile_table(cur, schema: str, table: str, *, allow_large: bool = False) ->
 
     cur.execute("SELECT column_name, data_type, ordinal_position FROM information_schema.columns "
                 "WHERE table_schema=%s AND table_name=%s ORDER BY ordinal_position", (schema, table))
-    cols = {name: ColumnProfile(name, dtype, type_class(dtype), ordinal) for name, dtype, ordinal in cur.fetchall()}
+    cols = {name: ColumnProfile(name, dtype, type_class(dtype), ordinal) for name, dtype, ordinal in cur.fetchall()
+            if columns is None or name in columns}
     cur.execute(sql.SQL("SELECT count(*) FROM {}").format(tbl))
     row_count = cur.fetchone()[0]
 

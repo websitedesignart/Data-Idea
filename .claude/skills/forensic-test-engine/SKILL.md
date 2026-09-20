@@ -44,7 +44,7 @@ If the user asks for a subtest whose status is not `implemented`, say so plainly
 not attempt a manual equivalent.
 
 Subtest-specific arguments for `run_test.py`:
-- `benford`: numeric `--column` only.
+- `benford`: numeric `--column` only, and only after the user has confirmed that column is an amount: ask them, then pass `--confirmed-by "<their name>"` (never invent a name). Without it the result is `"status": "declined"` with `REQUIRES_CONFIRMATION`. A `declined` result with `INSUFFICIENT_DATA` or `NOT_APPLICABLE` means the column cannot meaningfully be tested this way: report the `why` codes and stop. Use `--allow-unsuitable` only if the user insists after hearing that; the result is then an OBSERVATION for reference only, never a conformity claim. The suitability thresholds are unvalidated starting defaults: say so.
 - `duplicate-analysis`: optional `--distinct-of <col>` (shared-identifier mode),
   `--min-occurrences N`, `--require-digit`, `--include-placeholders`.
 - `fuzzy-entity-match`: required `--distinct-of <name col>`, optional
@@ -61,6 +61,7 @@ Subtest-specific arguments for `run_test.py`:
    <python> <engine>/forensic_platform/scripts/run_test.py --database <db> --subtest <subtest> --schema <schema> --table <table> --column <column>
    ```
 4. Parse the JSON response:
+   - `"status": "declined"`: the engine considered the test and decided this data does not suit it (see `verdict`, `why`, `next`). Report that; it is a finding about the data, not a failure to retry.
    - `"status": "refused"`: the engine declined to run (unimplemented subtest, missing column, wrong type). Report the exact reason. This is not an error to work around; it's the engine correctly refusing to guess.
    - `"status": "error"`: something failed during execution. Report the `code` and `reason`; do not fabricate a result. If the code is `STATEMENT_TIMEOUT` or `LOCK_TIMEOUT`, the engine protected the database by cancelling the query. Tell the user and ask before retrying. Never raise the `FORENSIC_*_TIMEOUT_MS` limits yourself.
    - `"status": "success"`: report the finding(s) exactly as returned. Cite `run_id` and `finding_id`, quote the statistics verbatim, state the finding's classification (OBSERVATION, ANOMALY, etc.), and include the `limitations` text.

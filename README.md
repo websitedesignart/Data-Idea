@@ -129,5 +129,9 @@ repository.
   0.55 threshold. That's deliberate: they could be different people.
 - Schema, table and column names are quoted safely, so quotes, spaces, reserved words and
   non-ASCII all work. Names that are empty, longer than 63 bytes, or contain `%` are refused.
-- `benford` reads the leading digit from the text of the number, so values below 1 (e.g. `0.5`)
-  currently read as leading digit `0` and are left out of the test. Known and unchanged.
+- `benford` counts the first significant digit, so values below 1 (e.g. `0.0456` counts as a 4)
+  are included. Version 1.0.0 read them as digit `0` and silently dropped them.
+- `benford` first checks that the column suits the test and declines otherwise: too few values
+  (`INSUFFICIENT_DATA`), a narrow or constrained range, fixed amounts, or an identifier-like column
+  (`NOT_APPLICABLE`). The column must also be confirmed as an amount by a named person
+  (`--confirmed-by`). The thresholds are unvalidated starting defaults, not established rules.

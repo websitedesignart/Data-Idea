@@ -123,7 +123,7 @@ def integration_tests():
         check("evidence keyed by the mixed-case, spaced primary key", r.get("evidence_identity", {}).get("columns") == ["Row Id"], r.get("evidence_identity"))
         r = run("--schema", "public", "--subtest", "fuzzy-entity-match", "--table", 'Odd "Table', "--column", "Ref Col", "--distinct-of", 'Name"Col')
         check("fuzzy-entity-match: quotes in a column name", (r.get("status"), r.get("flagged_keys")) == ("success", 1), (r.get("status"), r.get("reason") or r.get("stderr")))
-        r = run("--schema", "public", "--subtest", "benford", "--table", 'Odd "Table', "--column", 'Amt "x"')
+        r = run("--schema", "public", "--subtest", "benford", "--confirmed-by", "tester", "--allow-unsuitable", "--table", 'Odd "Table', "--column", 'Amt "x"')
         check("benford: mixed-case column (was never quoted before)", (r.get("status"), r.get("records_examined")) == ("success", 5), (r.get("status"), r.get("reason") or r.get("stderr")))
         r = run("--schema", "public", "--subtest", "duplicate-analysis", "--table", "select", "--column", "order")
         check("reserved words as table and column names", (r.get("status"), r.get("flagged_keys")) == ("success", 1), (r.get("status"), r.get("reason") or r.get("stderr")))
@@ -136,10 +136,10 @@ def integration_tests():
 
         print("\n=== attacks: a name that hides an INSERT must never execute it ===")
         attacks = [
-            ("benford --table (the original exploit)", ["--subtest", "benford", "--table", f"t_num\"; {FORGE}; SELECT 1 --", "--column", "amount"]),
-            ("benford --table, unquoted form", ["--subtest", "benford", "--table", f"t_num; {FORGE}; SELECT 1 --", "--column", "amount"]),
+            ("benford --table (the original exploit)", ["--subtest", "benford", "--confirmed-by", "tester", "--allow-unsuitable", "--table", f"t_num\"; {FORGE}; SELECT 1 --", "--column", "amount"]),
+            ("benford --table, unquoted form", ["--subtest", "benford", "--confirmed-by", "tester", "--allow-unsuitable", "--table", f"t_num; {FORGE}; SELECT 1 --", "--column", "amount"]),
             ("duplicate --table", ["--subtest", "duplicate-analysis", "--table", f't_pk"; {FORGE}; SELECT 1 --', "--column", "ref"]),
-            ("benford --column", ["--subtest", "benford", "--table", "t_num", "--column", f'amount"; {FORGE}; SELECT 1 --']),
+            ("benford --column", ["--subtest", "benford", "--confirmed-by", "tester", "--allow-unsuitable", "--table", "t_num", "--column", f'amount"; {FORGE}; SELECT 1 --']),
             ("fuzzy --distinct-of", ["--subtest", "fuzzy-entity-match", "--table", "t_pk", "--column", "ref", "--distinct-of", f'name"); {FORGE}; SELECT 1 --']),
             ("cross --right-table", ["--subtest", "cross-dataset-match", "--table", "t_pk", "--column", "ref", "--right-table", f'x" WHERE false; {FORGE}; SELECT 1 --', "--right-column", "ref"]),
             ("cross --right-column", ["--subtest", "cross-dataset-match", "--table", "t_pk", "--column", "ref", "--right-table", "t_pk", "--right-column", f'ref"); {FORGE}; SELECT 1 --']),
@@ -155,9 +155,9 @@ def integration_tests():
         check("the attacked table is intact", cur.fetchone()[0] == 7)
 
         print("\n=== names that cannot be made safe are refused with a reason ===")
-        r = run("--schema", "public", "--subtest", "benford", "--table", "t" * 70, "--column", "amount")
+        r = run("--schema", "public", "--subtest", "benford", "--confirmed-by", "tester", "--allow-unsuitable", "--table", "t" * 70, "--column", "amount")
         check("over-long name refused (PostgreSQL would silently truncate it)", r.get("status") == "refused" and "63 bytes" in r.get("reason", ""), r.get("reason"))
-        r = run("--schema", "public", "--subtest", "benford", "--table", "t_num", "--column", "amo%unt")
+        r = run("--schema", "public", "--subtest", "benford", "--confirmed-by", "tester", "--allow-unsuitable", "--table", "t_num", "--column", "amo%unt")
         check("name containing % refused", r.get("status") == "refused" and "'%'" in r.get("reason", ""), r.get("reason"))
 
         print("\n=== the attempts are themselves recorded ===")
