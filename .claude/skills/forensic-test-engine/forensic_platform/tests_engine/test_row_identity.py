@@ -110,7 +110,7 @@ def integration_tests():
             GRANT SELECT ON ALL TABLES IN SCHEMA public TO forensic_app;
         """)
 
-        env = {**os.environ, "FORENSIC_MCP_CONFIG": str(cfg_path), "FORENSIC_MASK_SALT": "t" * 40}
+        env = {**os.environ, "FORENSIC_MCP_CONFIG": str(cfg_path), "FORENSIC_MASK_SALT": "t" * 40, "FORENSIC_LEGACY_OUTPUT": "1"}
 
         def run(*args):
             p = subprocess.run([sys.executable, str(ENGINE / "scripts" / "run_test.py"), "--database", scratch,

@@ -1,6 +1,39 @@
 # Changelog
 
 ## [Unreleased]
+- **One compact result for every method, refusal and error** (`core/present.py`). `run_test.py`
+  used to print four differently shaped, pretty-printed results that repeated the limitations text,
+  the query text and constant wording every run. It now prints one line in the contract shape:
+  `status` (`completed`, `declined`, `refused` or `error`), `verdict` and `why` codes, `scanned`,
+  `class`, `summary`, up to 5 `top` signals with their total, and pointers: `dataset` (version and
+  how it was established), `run`, `finding_ids`, `evidence` (the row-identity key and the number of
+  links) and `limits`. The evidence itself stays in the evidence store; only pointers are printed.
+- Measured on the four methods against synthetic tables: 8,492 characters became 3,264 (about 2,123
+  to 816 tokens, ESTIMATE), with the same facts (same flagged counts, MAD and worst digit).
+- Constant text is a pointer. `limits` (e.g. `benford@1.1.0`) resolves with the new
+  `scripts/describe_method.py`, which reads the registry and touches no database. Query text is
+  in the recorded test run, and Benford's full first-digit counts are now written into the finding
+  itself (they were previously only in the printed output).
+- Refusals and errors share the shape and carry a stable `code`: `NO_SUCH_TABLE`, `NO_SUCH_COLUMN`,
+  `NO_ROW_IDENTITY`, `UNSAFE_IDENTIFIER`, `MISSING_ARGUMENT`, `WRONG_COLUMN_TYPE`, `NOT_IMPLEMENTED`,
+  `BAD_CONFIGURATION`, plus the database codes from before. A result that cannot be shown within the
+  contract becomes `RESULT_NOT_PRESENTABLE` with the run recorded; it never falls back to printing
+  the raw payload.
+- Identifiers cannot appear: a signal's subject is a masked reference, a group label or a row
+  index. So `--reveal-values` has no effect on the new output. A run without a masking key shows
+  rank labels and says `values: withheld`. Measured read-only on the original database: a duplicate
+  check on its beneficiary-account column printed 0 of its account numbers, and its write counters
+  were unchanged.
+- **Transition:** `--legacy-output` (or `FORENSIC_LEGACY_OUTPUT=1`) prints the previous per-method
+  shapes, `status: success` included, and is the only place `--reveal-values` still applies. It will
+  be removed. Four suites that test database behaviour rather than output (row identity, identifier
+  safety, timeouts, dataset versions) still run through it and must be ported before then; the
+  masking and Benford suites now check the new default output.
+- New `tests_engine/test_output_contract.py` (65 checks). Every pointer in a result is resolved
+  against the database (run, finding, dataset version, evidence link count); finding ids and run
+  ids are deliberately made different so a swap cannot pass. Nineteen deliberate weakenings were
+  tried: eighteen caught, and the survivor was a parameter that turned out to be unused, which was
+  then removed.
 - **Benford now checks that a column suits the test, and counts values below 1.** Before, it ran
   on any numeric column and reported "nonconformity" for data where Benford's Law does not
   apply, e.g. columns with a narrow or fixed set of values. It now declines with a reason

@@ -185,15 +185,15 @@ def integration_tests():
         r, _ = run("amt_good", "amount", "--confirmed-by", "A. Reviewer")
         s = r.get("suitability", {})
         check("a log-uniform 3,000-row amount column is SUPPORTED and runs",
-              r.get("status") == "success" and s.get("verdict") == "SUPPORTED" and s.get("why") == [], (r.get("status"), s))
-        check("the run reports unvalidated thresholds, who confirmed it, and the new test version",
-              s.get("thresholds") == "unvalidated" and s.get("confirmed_by") == "A. Reviewer" and r.get("test_version") == "1.1.0", (s, r.get("test_version")))
+              r.get("status") == "completed" and r.get("verdict") == "SUPPORTED" and "why" not in r, r)
+        check("the run reports unvalidated thresholds and the new test version",
+              r.get("summary", {}).get("thresholds") == "unvalidated" and r.get("method") == "benford@1.1.0", r.get("method"))
         check("who confirmed it is in the audit log",
               count("SELECT count(*) FROM _forensic.audit_log WHERE status='success' AND params_json->>'confirmed_by' = 'A. Reviewer'") >= 1)
         r, _ = run("amt_mixed", "amount", "--confirmed-by", "A. Reviewer")
         check("30% negatives -> SUPPORTED_WITH_WARNING: still runs, warning travels with it",
-              r.get("status") == "success" and r["suitability"]["verdict"] == "SUPPORTED_WITH_WARNING"
-              and r["suitability"]["why"] == ["MANY_ZERO_OR_NEGATIVE"], r.get("suitability"))
+              r.get("status") == "completed" and r.get("verdict") == "SUPPORTED_WITH_WARNING"
+              and r.get("why") == ["MANY_ZERO_OR_NEGATIVE"], r)
 
         print("\n--- confirmed but unsuitable: declined with the reason ---")
         for table, column, verdict, must in (
@@ -213,8 +213,8 @@ def integration_tests():
         print("\n--- explicit override: allowed, capped, labelled ---")
         r, _ = run("amt_small", "amount", "--confirmed-by", "A. Reviewer", "--allow-unsuitable")
         check("--allow-unsuitable runs an INSUFFICIENT_DATA column and says it was overridden",
-              r.get("status") == "success" and r["suitability"].get("overridden") is True
-              and r["suitability"]["verdict"] == "INSUFFICIENT_DATA", (r.get("status"), r.get("suitability")))
+              r.get("status") == "completed" and r.get("verdict") == "SUPPORTED_WITH_WARNING"
+              and r.get("why") == ["SUITABILITY_OVERRIDDEN", "FEW_ELIGIBLE_VALUES"] and r.get("class") == "OBSERVATION", r)
         cur.execute("SELECT classification, description FROM _forensic.findings WHERE finding_id = %s", (r["finding_ids"][0],))
         cls, desc = cur.fetchone()
         check("the finding is an OBSERVATION and states it must not be read as (non)conformity",

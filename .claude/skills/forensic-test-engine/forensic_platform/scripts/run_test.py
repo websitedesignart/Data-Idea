@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -24,7 +25,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from forensic_platform.core.config import forensic_dsn
 from forensic_platform.core.db import connect, describe_db_error, timeouts
 from forensic_platform.core import masking
-from forensic_platform.core.contract import Verdict
+from forensic_platform.core import present
+from forensic_platform.core.contract import ContractViolation, MethodRef, Verdict
 from forensic_platform.core.guard import assess_column
 from forensic_platform.core.identity import NoRowIdentity, resolve_row_identity
 from forensic_platform.core.sqlsafe import UnsafeIdentifier, check_identifier, table_exists
@@ -70,14 +72,45 @@ def _mask_groups(groups: list, column: str, args) -> tuple[list, dict]:
     return [{**g, "key_value": v} for g, v in zip(groups, p.values)], _mode_info(p)
 
 
-def _refuse(cur, args, dataset_id, reason: str) -> None:
+def _version(args) -> str | None:
+    try:
+        return base.get_test_entry(args.subtest).get("version")
+    except ValueError:
+        return None
+
+
+def _print_refused(args, code: str, reason: str) -> None:
+    print(json.dumps(present.refused(args.subtest, _version(args), code, f"{reason} Nothing was executed."),
+                     separators=(",", ":")))
+
+
+def _print_error(args, code: str, reason: str) -> None:
+    print(json.dumps(present.failed(args.subtest, _version(args), code, reason), separators=(",", ":")))
+
+
+def _emit(args, legacy: dict, build) -> None:
+    """Print the compact contract result, or the previous per-method shape under --legacy-output
+    (kept for the transition; `--reveal-values` only affects that shape)."""
+    if args.legacy_output:
+        print(json.dumps(legacy, indent=2, default=str))
+        return
+    try:
+        print(build().to_json())
+    except ContractViolation as exc:
+        # The run is recorded; only its presentation failed. Say so, never print a raw fallback.
+        _print_error(args, "RESULT_NOT_PRESENTABLE",
+                     f"the run was recorded but its result broke the output contract: {exc}")
+
+
+def _refuse(cur, args, dataset_id, reason: str, code: str = "REFUSED") -> None:
     """Audit-log a refusal and print it in the standard compact shape."""
     base.log_audit(cur, ACTOR, f"run:{args.subtest}", dataset_id, __file__, vars(args), "refused", error_text=reason)
-    print(json.dumps({"status": "refused", "reason": f"{reason} Nothing was executed."}))
+    _print_refused(args, code, reason)
 
 
-def _finish_duplicate_analysis(cur, args, entry, module, dataset_id, result) -> None:
+def _finish_duplicate_analysis(cur, args, entry, module, dataset, result) -> None:
     """Record a duplicate-analysis run, its finding, and its record-level evidence."""
+    dataset_id = dataset.dataset_id
     fields = [args.column] + ([args.distinct_of] if args.distinct_of else [])
     limitations = entry["limitations"]
     truncated = len(result.evidence) >= args.evidence_limit
@@ -133,7 +166,7 @@ def _finish_duplicate_analysis(cur, args, entry, module, dataset_id, result) -> 
 
     top_groups, values_info = _mask_groups(result.top_groups[:15], args.column, args)
 
-    print(json.dumps({
+    legacy = ({
         "status": "success",
         "run_id": run_id,
         "dataset_id": dataset_id,
@@ -155,12 +188,18 @@ def _finish_duplicate_analysis(cur, args, entry, module, dataset_id, result) -> 
         **values_info,
         "limitations": limitations,
         "query_text": result.query_text,
-    }, indent=2, default=str))
+    })
+    _emit(args, legacy, lambda: present.duplicate_result(
+        MethodRef(module.TEST_NAME, module.TEST_VERSION), present.dataset_version(dataset), result,
+        run_id=run_id, finding_id=finding_id, links=linked, truncated=truncated, salt=_salt(),
+        params={"min_occurrences": args.min_occurrences, "exclude_placeholders": not args.include_placeholders,
+                "require_digit": args.require_digit}))
 
 
-def _finish_fuzzy_entity_match(cur, args, entry, module, dataset_id, result) -> None:
+def _finish_fuzzy_entity_match(cur, args, entry, module, dataset, result) -> None:
     """Record a fuzzy-entity-match run: how many identifiers still resolve to
     multiple entities once spelling variants are collapsed."""
+    dataset_id = dataset.dataset_id
     limitations = entry["limitations"]
     truncated = len(result.evidence) >= args.evidence_limit
     if truncated:
@@ -212,7 +251,7 @@ def _finish_fuzzy_entity_match(cur, args, entry, module, dataset_id, result) -> 
 
     top_groups, values_info = _mask_groups(result.top_groups[:15], args.column, args)
 
-    print(json.dumps({
+    legacy = ({
         "status": "success",
         "run_id": run_id,
         "dataset_id": dataset_id,
@@ -233,11 +272,17 @@ def _finish_fuzzy_entity_match(cur, args, entry, module, dataset_id, result) -> 
         "top_groups": top_groups,
         **values_info,
         "limitations": limitations,
-    }, indent=2, default=str))
+    })
+    _emit(args, legacy, lambda: present.fuzzy_result(
+        MethodRef(module.TEST_NAME, module.TEST_VERSION), present.dataset_version(dataset), result,
+        run_id=run_id, finding_id=finding_id, links=linked, truncated=truncated, salt=_salt(),
+        params={"min_entities": args.min_occurrences, "exclude_placeholders": not args.include_placeholders,
+                "require_digit": args.require_digit}))
 
 
-def _finish_cross_dataset_match(cur, args, entry, module, dataset_id, result) -> None:
+def _finish_cross_dataset_match(cur, args, entry, module, dataset, result) -> None:
     """Record a reconciliation run between two datasets."""
+    dataset_id = dataset.dataset_id
     limitations = entry["limitations"]
     truncated = len(result.evidence) >= args.evidence_limit
     if truncated:
@@ -290,7 +335,7 @@ def _finish_cross_dataset_match(cur, args, entry, module, dataset_id, result) ->
         sample_left = masking.protect(result.sample_only_left[:10], column=args.column, salt=salt)
         sample_right = masking.protect(result.sample_only_right[:10], column=args.right_column, salt=salt)
         sample_left = masking.Protected(sample_left.values, sample_left.mode, note)
-    print(json.dumps({
+    legacy = ({
         "status": "success",
         "run_id": run_id,
         "finding_ids": [finding_id],
@@ -308,7 +353,11 @@ def _finish_cross_dataset_match(cur, args, entry, module, dataset_id, result) ->
         "evidence_links_written": linked,
         "evidence_identity": result.identity.describe(),
         "limitations": limitations,
-    }, indent=2, default=str))
+    })
+    _emit(args, legacy, lambda: present.cross_result(
+        MethodRef(module.TEST_NAME, module.TEST_VERSION), present.dataset_version(dataset), result,
+        run_id=run_id, finding_id=finding_id, links=linked, truncated=truncated,
+        params={"exclude_placeholders": not args.include_placeholders}))
 
 
 def main() -> None:
@@ -342,8 +391,11 @@ def main() -> None:
     parser.add_argument("--allow-unsuitable", action="store_true",
                         help="benford: run even though the column is INSUFFICIENT_DATA or NOT_APPLICABLE. "
                              "The result is capped at OBSERVATION and says so. Never overrides a confirmation")
+    parser.add_argument("--legacy-output", action="store_true", default=os.environ.get("FORENSIC_LEGACY_OUTPUT") == "1",
+                        help="Print the previous per-method output shape instead of the compact contract "
+                             "result (transition aid; also $FORENSIC_LEGACY_OUTPUT=1). Will be removed")
     parser.add_argument("--reveal-values", action="store_true",
-                        help="Show raw key values instead of masked references. Honoured only when "
+                        help="Legacy output only: show raw key values instead of masked references. Honoured only when "
                              "neither the column nor its values look sensitive")
     parser.add_argument("--label", default=None, help="Optional human label for this run")
     args = parser.parse_args()
@@ -366,17 +418,14 @@ def _report_db_failure(args, exc: psycopg2.Error) -> None:
                            vars(args), "error", error_text=f"{code}: {reason}")
     except Exception:
         pass
-    print(json.dumps({"status": "error", "code": code, "reason": reason}))
+    _print_error(args, code, reason)
 
 
 def _execute(args) -> None:
     entry = base.get_test_entry(args.subtest)
     if entry.get("status") != "implemented":
-        print(json.dumps({
-            "status": "refused",
-            "reason": f"Subtest '{args.subtest}' is registered as '{entry.get('status')}', not implemented. "
-                      f"Nothing was executed.",
-        }))
+        _print_refused(args, "NOT_IMPLEMENTED",
+                       f"Subtest '{args.subtest}' is registered as '{entry.get('status')}', not implemented.")
         return
 
     try:
@@ -385,7 +434,7 @@ def _execute(args) -> None:
     except RuntimeError as exc:
         # Missing/unreadable project config: refuse in the same JSON shape as every
         # other refusal so the caller never has to parse a traceback.
-        print(json.dumps({"status": "refused", "reason": f"{exc} Nothing was executed."}))
+        _print_refused(args, "BAD_CONFIGURATION", str(exc))
         return
 
     with connect(args.database) as conn:
@@ -402,7 +451,7 @@ def _execute(args) -> None:
                 if value is not None:
                     check_identifier(value, what)
         except UnsafeIdentifier as exc:
-            _refuse(cur, args, None, str(exc))
+            _refuse(cur, args, None, str(exc), "UNSAFE_IDENTIFIER")
             return
 
         identity = None
@@ -416,13 +465,15 @@ def _execute(args) -> None:
                     cur, ACTOR, f"run:{args.subtest}", None, __file__,
                     vars(args), "refused", error_text=str(exc),
                 )
-                print(json.dumps({"status": "refused", "reason": f"{exc} Nothing was executed."}))
+                _print_refused(args, "NO_ROW_IDENTITY", str(exc))
                 return
         elif not table_exists(cur, args.schema, args.table):
-            _refuse(cur, args, None, f"Table {args.schema}.{args.table} does not exist or is not visible to this role.")
+            _refuse(cur, args, None, f"Table {args.schema}.{args.table} does not exist or is not visible to this role.",
+                    "NO_SUCH_TABLE")
             return
 
-        dataset_id = base.resolve_dataset_version(cur, args.schema, args.table, ACTOR).dataset_id
+        dataset = base.resolve_dataset_version(cur, args.schema, args.table, ACTOR)
+        dataset_id = dataset.dataset_id
 
         data_type = base.column_info(cur, args.schema, args.table, args.column)
         if data_type is None:
@@ -431,10 +482,7 @@ def _execute(args) -> None:
                 vars(args), "refused",
                 error_text=f"Column '{args.column}' does not exist on {args.schema}.{args.table}",
             )
-            print(json.dumps({
-                "status": "refused",
-                "reason": f"Column '{args.column}' does not exist on {args.schema}.{args.table}. Nothing was executed.",
-            }))
+            _print_refused(args, "NO_SUCH_COLUMN", f"Column '{args.column}' does not exist on {args.schema}.{args.table}.")
             return
 
         if args.subtest == "benford" and data_type not in (
@@ -445,10 +493,8 @@ def _execute(args) -> None:
                 vars(args), "refused",
                 error_text=f"Column '{args.column}' is type '{data_type}', not numeric",
             )
-            print(json.dumps({
-                "status": "refused",
-                "reason": f"benford requires a numeric column; '{args.column}' is '{data_type}'. Nothing was executed.",
-            }))
+            _print_refused(args, "WRONG_COLUMN_TYPE",
+                           f"benford requires a numeric column; '{args.column}' is '{data_type}'.")
             return
 
         if args.distinct_of:
@@ -459,20 +505,19 @@ def _execute(args) -> None:
                     vars(args), "refused",
                     error_text=f"Column '{args.distinct_of}' does not exist on {args.schema}.{args.table}",
                 )
-                print(json.dumps({
-                    "status": "refused",
-                    "reason": f"--distinct-of column '{args.distinct_of}' does not exist on "
-                              f"{args.schema}.{args.table}. Nothing was executed.",
-                }))
+                _print_refused(args, "NO_SUCH_COLUMN", f"--distinct-of column '{args.distinct_of}' does not exist on "
+                                                        f"{args.schema}.{args.table}.")
                 return
 
         if args.subtest == "cross-dataset-match" and args.right_table and args.right_column:
             rschema = args.right_schema or args.schema
             if not table_exists(cur, rschema, args.right_table):
-                _refuse(cur, args, dataset_id, f"Right table {rschema}.{args.right_table} does not exist or is not visible to this role.")
+                _refuse(cur, args, dataset_id, f"Right table {rschema}.{args.right_table} does not exist or is not visible to this role.",
+                        "NO_SUCH_TABLE")
                 return
             if base.column_info(cur, rschema, args.right_table, args.right_column) is None:
-                _refuse(cur, args, dataset_id, f"Column '{args.right_column}' does not exist on {rschema}.{args.right_table}.")
+                _refuse(cur, args, dataset_id, f"Column '{args.right_column}' does not exist on {rschema}.{args.right_table}.",
+                        "NO_SUCH_COLUMN")
                 return
 
         module = DISPATCH[args.subtest]
@@ -482,11 +527,8 @@ def _execute(args) -> None:
         try:
             if args.subtest == "cross-dataset-match":
                 if not (args.right_table and args.right_column):
-                    print(json.dumps({
-                        "status": "refused",
-                        "reason": "cross-dataset-match requires --right-table and "
-                                  "--right-column. Nothing was executed.",
-                    }))
+                    _print_refused(args, "MISSING_ARGUMENT",
+                                   "cross-dataset-match requires --right-table and --right-column.")
                     return
                 result = module.run(
                     cur, args.schema, args.table, args.column,
@@ -499,11 +541,8 @@ def _execute(args) -> None:
                 )
             elif args.subtest == "fuzzy-entity-match":
                 if not args.distinct_of:
-                    print(json.dumps({
-                        "status": "refused",
-                        "reason": "fuzzy-entity-match requires --distinct-of (the name column). "
-                                  "Nothing was executed.",
-                    }))
+                    _print_refused(args, "MISSING_ARGUMENT",
+                                   "fuzzy-entity-match requires --distinct-of (the name column).")
                     return
                 result = module.run(
                     cur, args.schema, args.table, args.column,
@@ -551,17 +590,17 @@ def _execute(args) -> None:
                 cur, ACTOR, f"run:{args.subtest}", dataset_id, __file__,
                 vars(args), "error", error_text=f"{code}: {reason}",
             )
-            print(json.dumps({"status": "error", "code": code, "reason": reason}))
+            _print_error(args, code, reason)
             return
 
         if args.subtest == "duplicate-analysis":
-            _finish_duplicate_analysis(cur, args, entry, module, dataset_id, result)
+            _finish_duplicate_analysis(cur, args, entry, module, dataset, result)
             return
         if args.subtest == "fuzzy-entity-match":
-            _finish_fuzzy_entity_match(cur, args, entry, module, dataset_id, result)
+            _finish_fuzzy_entity_match(cur, args, entry, module, dataset, result)
             return
         if args.subtest == "cross-dataset-match":
-            _finish_cross_dataset_match(cur, args, entry, module, dataset_id, result)
+            _finish_cross_dataset_match(cur, args, entry, module, dataset, result)
             return
 
         run_id = base.record_test_run(
@@ -579,35 +618,37 @@ def _execute(args) -> None:
         )
 
         findings = []
+        # the full digit table is evidence: keep it with the finding, not only in Claude-facing output
+        counts_txt = " First-digit counts 1-9: " + ",".join(str(result.digit_counts.get(d, 0)) for d in range(1, 10)) + "."
         if overridden:
             desc = (f"Run despite {','.join(suitability.reason_codes)} at the user's request (--allow-unsuitable). "
                     f"First-digit MAD={result.mad:.5f} (n={result.records_examined}) is reported for reference only "
-                    f"and is not to be read as conformity or nonconformity.")
+                    f"and is not to be read as conformity or nonconformity." + counts_txt)
             findings.append(base.record_finding(cur, run_id, "OBSERVATION", desc))
         elif not result.reliable_sample_size:
             desc = (
                 f"Only {result.records_examined} usable values in {args.schema}.{args.table}.{args.column} "
                 f"(Nigrini's guidance recommends >= {benford.MIN_RELIABLE_SAMPLE} for a reliable first-digit test). "
-                f"MAD/chi-square are reported but should not be relied on."
+                f"MAD/chi-square are reported but should not be relied on." + counts_txt
             )
             findings.append(base.record_finding(cur, run_id, "OBSERVATION", desc))
         elif result.conformity in ("marginally acceptable conformity", "nonconformity"):
             desc = (
                 f"First-digit distribution of {args.schema}.{args.table}.{args.column} shows "
                 f"{result.conformity} with Benford's Law (MAD={result.mad:.5f}, chi-square={result.chi_square:.2f}, "
-                f"n={result.records_examined}). This is a statistical anomaly, not evidence of fraud on its own."
+                f"n={result.records_examined}). This is a statistical anomaly, not evidence of fraud on its own." + counts_txt
             )
             findings.append(base.record_finding(cur, run_id, "ANOMALY", desc))
         else:
             desc = (
                 f"First-digit distribution of {args.schema}.{args.table}.{args.column} shows "
-                f"{result.conformity} with Benford's Law (MAD={result.mad:.5f}, n={result.records_examined})."
+                f"{result.conformity} with Benford's Law (MAD={result.mad:.5f}, n={result.records_examined})." + counts_txt
             )
             findings.append(base.record_finding(cur, run_id, "OBSERVATION", desc))
 
         base.log_audit(cur, ACTOR, f"run:{args.subtest}", dataset_id, __file__, vars(args), "success")
 
-        print(json.dumps({
+        legacy = ({
             "status": "success",
             "run_id": run_id,
             "dataset_id": dataset_id,
@@ -627,7 +668,12 @@ def _execute(args) -> None:
                             **({"overridden": True} if overridden else {}), "confirmed_by": args.confirmed_by},
             "limitations": entry["limitations"],
             "query_text": result.query_text,
-        }, indent=2))
+        })
+        anomalous = (not overridden and result.reliable_sample_size
+                     and result.conformity in ("marginally acceptable conformity", "nonconformity"))
+        _emit(args, legacy, lambda: present.benford_result(
+            MethodRef(module.TEST_NAME, module.TEST_VERSION), present.dataset_version(dataset), result, suitability,
+            run_id=run_id, finding_id=findings[0], overridden=overridden, anomalous=anomalous))
 
 
 if __name__ == "__main__":

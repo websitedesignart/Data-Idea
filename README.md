@@ -129,6 +129,9 @@ repository.
   0.55 threshold. That's deliberate: they could be different people.
 - Schema, table and column names are quoted safely, so quotes, spaces, reserved words and
   non-ASCII all work. Names that are empty, longer than 63 bytes, or contain `%` are refused.
+- Every result is one compact line (`status`, `verdict`, `summary`, top signals, and pointers to the
+  recorded run, finding, dataset version and evidence). Identifiers are never printed. Read a
+  method's limitations with `scripts/describe_method.py <method>@<version>`.
 - `benford` counts the first significant digit, so values below 1 (e.g. `0.0456` counts as a 4)
   are included. Version 1.0.0 read them as digit `0` and silently dropped them.
 - `benford` first checks that the column suits the test and declines otherwise: too few values

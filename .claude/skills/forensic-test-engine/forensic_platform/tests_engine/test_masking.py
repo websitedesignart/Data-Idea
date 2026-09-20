@@ -164,7 +164,11 @@ def integration_tests():
             INSERT INTO roll (aadhaar, invoice_no) VALUES ('987654321098', 'INV-9'), ('555566667777', 'INV-1');
             GRANT SELECT ON ALL TABLES IN SCHEMA public TO forensic_app;
         ''')
-        base_env = {**os.environ, "FORENSIC_MCP_CONFIG": str(cfg_path), "FORENSIC_MASK_SALT": "s" * 40}
+        # the reveal / withheld semantics below belong to the LEGACY output; the default contract
+        # output is tested in its own section at the end
+        base_env = {**os.environ, "FORENSIC_MCP_CONFIG": str(cfg_path), "FORENSIC_MASK_SALT": "s" * 40,
+                    "FORENSIC_LEGACY_OUTPUT": "1"}
+        contract_env = {k: v for k, v in base_env.items() if k != "FORENSIC_LEGACY_OUTPUT"}
 
         def run(*extra, env=None):
             p = subprocess.run([sys.executable, str(ENGINE / "scripts" / "run_test.py"), "--database", scratch,
@@ -176,7 +180,7 @@ def integration_tests():
 
         raw_ids = ("123456789012", "987654321098", "555566667777", "Ram Kumar", "Gita Rani")
 
-        print("\n--- duplicate-analysis ---")
+        print("\n--- legacy output: duplicate-analysis ---")
         r, out = run("--subtest", "duplicate-analysis", "--table", "pay", "--column", "aadhaar")
         keys = [g["key_value"] for g in r.get("top_groups", [])]
         check("succeeds and flags both Aadhaar numbers", r.get("status") == "success" and r.get("flagged_keys") == 2, r.get("status"))
@@ -227,6 +231,33 @@ def integration_tests():
         r, out = run("--subtest", "cross-dataset-match", "--table", "pay", "--column", "invoice_no",
                      "--right-table", "roll", "--right-column", "invoice_no", "--reveal-values")
         check("both sides harmless and reveal requested: raw values shown", r.get("values") == "revealed" and "INV-7" in out, r.get("values"))
+
+        print("\n--- the default (contract) output ---")
+        tok = lambda r: [t["subject"] for t in r.get("top", [])]
+        key = b"s" * 40
+        want = {"ref:" + masking.mask_value(v, key) for v in ("123456789012", "987654321098")}
+        r, out = run("--subtest", "duplicate-analysis", "--table", "pay", "--column", "aadhaar", env=contract_env)
+        check("completed; flags both Aadhaar numbers; says values are masked",
+              r.get("status") == "completed" and r["summary"]["flagged_keys"] == 2 and r["summary"]["values"] == "masked", r.get("summary"))
+        check("subjects are exactly the keyed tokens of the two identifiers", set(tok(r)) == want, tok(r))
+        check("no raw identifier or name anywhere in the output", not any(v in out for v in raw_ids))
+        r2, out2 = run("--subtest", "duplicate-analysis", "--table", "pay", "--column", "invoice_no", "--reveal-values", env=contract_env)
+        check("--reveal-values cannot put raw values into a contract result (even for a harmless column)",
+              r2["summary"]["values"] == "masked" and "INV-7" not in out2 and all(s.startswith("ref:") for s in tok(r2)), tok(r2))
+        r3, out3 = run("--subtest", "duplicate-analysis", "--table", "pay", "--column", "aadhaar",
+                       env={**contract_env, "FORENSIC_MASK_SALT": "short"})
+        check("no usable key: subjects are rank labels, values withheld, counts kept, nothing raw",
+              r3["summary"]["values"] == "withheld" and r3["summary"]["flagged_keys"] == 2
+              and all(s.startswith("grp:key_") for s in tok(r3)) and not any(v in out3 for v in raw_ids), tok(r3))
+        r, out = run("--subtest", "fuzzy-entity-match", "--table", "pay", "--column", "aadhaar", "--distinct-of", "who", env=contract_env)
+        check("fuzzy: masked subject, no raw identifier or name",
+              r.get("status") == "completed" and tok(r) == ["ref:" + masking.mask_value("123456789012", key)]
+              and not any(v in out for v in raw_ids), tok(r))
+        r, out = run("--subtest", "cross-dataset-match", "--table", "pay", "--column", "aadhaar",
+                     "--right-table", "roll", "--right-column", "aadhaar", env=contract_env)
+        check("cross-dataset: counts only, no sample values, nothing raw",
+              r["summary"]["only_left"] == 1 and r["summary"]["only_right"] == 1 and not any(v in out for v in raw_ids)
+              and "sample_only_left" not in out, r.get("summary"))
     finally:
         if conn is not None:
             conn.close()
