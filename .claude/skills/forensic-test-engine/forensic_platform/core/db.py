@@ -59,7 +59,12 @@ def connect(database: str):
     t = timeouts()  # validated integers, so safe to place in the options string
     conn = psycopg2.connect(
         forensic_dsn(database),
-        options=f"-c statement_timeout={t['statement_timeout_ms']} -c lock_timeout={t['lock_timeout_ms']}",
+        options=(
+            f"-c statement_timeout={t['statement_timeout_ms']} -c lock_timeout={t['lock_timeout_ms']} "
+            # Pin how values are rendered as text, so the same data hashes and compares the same
+            # whatever the server or role defaults are (dates, time zones, intervals, floats).
+            "-c DateStyle=ISO,MDY -c IntervalStyle=iso_8601 -c TimeZone=UTC -c extra_float_digits=1"
+        ),
     )
     try:
         yield conn

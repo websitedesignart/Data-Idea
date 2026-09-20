@@ -7,8 +7,11 @@ calculation itself — they never touch _forensic tables directly.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 
+import psycopg2
+import psycopg2.errors
 import yaml
 from psycopg2 import sql
 
@@ -38,42 +41,98 @@ def column_info(cur, schema: str, table: str, column: str):
     return row[0] if row else None
 
 
-def get_or_register_dataset(cur, schema: str, table: str, actor: str) -> int:
-    """Resolve the dataset version a run should cite.
+FINGERPRINT_TAG = "s56"
 
-    Reuses the registered version only if the table still has the row count that
-    was recorded at acquisition. If it does not, the snapshot has changed since
-    it was fingerprinted, so a NEW version is registered rather than silently
-    attributing new results to the old one.
+
+@dataclass(frozen=True)
+class DatasetRef:
+    """Which version of a dataset a run cites, and how strongly that version is established."""
+    dataset_id: int
+    basis: str                 # "content": fingerprinted | "row_count": fingerprint unavailable
+    fingerprint: str | None
+    row_count: int
+    registered_now: bool
+
+
+def content_fingerprint(cur, schema: str, table: str) -> str:
+    """Order-independent fingerprint of a table's CONTENT: 's56:<rows>:<sum of row hashes>'.
+
+    Each row's text form is hashed with SHA-256, its first 56 bits are kept, and the hashes are
+    summed, so the result does not depend on row order or physical layout. It is a change
+    detector (any edit, insert or delete alters it), not tamper-proofing: an adversary with
+    write access could craft a collision, and detecting that is the audit log's job. Text
+    rendering is pinned by the session settings in core.db, so the same data gives the same value.
     """
-    cur.execute(
-        "SELECT dataset_id, row_count FROM _forensic.datasets "
-        "WHERE source_schema=%s AND source_table=%s ORDER BY imported_at DESC LIMIT 1",
-        (schema, table),
-    )
-    row = cur.fetchone()
-    if row:
-        dataset_id, recorded_rows = row
-        cur.execute(sql.SQL("SELECT count(*) FROM {}").format(ident(schema, table)))
-        if cur.fetchone()[0] == recorded_rows:
-            return dataset_id
-        # fall through: source no longer matches its registered version
+    cur.execute(sql.SQL(
+        "SELECT count(*), coalesce(sum((('x' || encode(substring(sha256(convert_to(t::text, 'UTF8')) "
+        "from 1 for 7), 'hex'))::bit(56)::bigint)::numeric), 0) FROM {} AS t"
+    ).format(ident(schema, table)))
+    n, total = cur.fetchone()
+    return f"{FINGERPRINT_TAG}:{n}:{total}"
 
+
+def resolve_dataset_version(cur, schema: str, table: str, actor: str) -> DatasetRef:
+    """Resolve (or register) the dataset version a run should cite.
+
+    A version is the table's CONTENT plus its column layout. Unchanged content reuses the
+    registered version; any change registers a new one, so a finding can never be attributed
+    to data it was not computed on. Returning to earlier content maps back to that earlier
+    version. Hashes recorded by other algorithms (e.g. Excel ingestion's) are never trusted for
+    reuse, since they cannot be compared.
+
+    If the fingerprint cannot be computed within the statement timeout, this falls back to the
+    weaker row-count basis, and records that it did (table_hash NULL, a note). It never claims
+    a content-verified version it did not verify.
+    """
     from ..core.hashing import column_signature
 
-    cur.execute(sql.SQL("SELECT count(*) FROM {}").format(ident(schema, table)))
-    row_count = cur.fetchone()[0]
+    cur.execute("SAVEPOINT dataset_fp")
+    try:
+        fingerprint = content_fingerprint(cur, schema, table)
+        cur.execute("RELEASE SAVEPOINT dataset_fp")
+    except psycopg2.errors.QueryCanceled:
+        cur.execute("ROLLBACK TO SAVEPOINT dataset_fp")
+        cur.execute("RELEASE SAVEPOINT dataset_fp")
+        fingerprint = None
+
+    if fingerprint is not None:
+        row_count = int(fingerprint.split(":")[1])
+    else:
+        cur.execute(sql.SQL("SELECT count(*) FROM {}").format(ident(schema, table)))
+        row_count = cur.fetchone()[0]
+
     cur.execute(
         "SELECT column_name, data_type FROM information_schema.columns WHERE table_schema=%s AND table_name=%s",
         (schema, table),
     )
     col_hash = column_signature(cur.fetchall())
+
+    if fingerprint is not None:
+        cur.execute(
+            "SELECT dataset_id FROM _forensic.datasets WHERE source_schema=%s AND source_table=%s "
+            "AND table_hash=%s AND column_hash=%s ORDER BY imported_at DESC LIMIT 1",
+            (schema, table, fingerprint, col_hash),
+        )
+        note = "basis=content"
+    else:
+        # Only reuse an earlier row-count-basis version; never let a weaker check claim a
+        # content-verified one.
+        cur.execute(
+            "SELECT dataset_id FROM _forensic.datasets WHERE source_schema=%s AND source_table=%s "
+            "AND table_hash IS NULL AND row_count=%s AND column_hash=%s ORDER BY imported_at DESC LIMIT 1",
+            (schema, table, row_count, col_hash),
+        )
+        note = "basis=row_count: content fingerprint exceeded the statement timeout"
+    found = cur.fetchone()
+    if found:
+        return DatasetRef(found[0], "content" if fingerprint else "row_count", fingerprint, row_count, False)
+
     cur.execute(
-        "INSERT INTO _forensic.datasets (source_schema, source_table, row_count, column_hash, imported_by) "
-        "VALUES (%s,%s,%s,%s,%s) RETURNING dataset_id",
-        (schema, table, row_count, col_hash, actor),
+        "INSERT INTO _forensic.datasets (source_schema, source_table, row_count, column_hash, table_hash, imported_by, notes) "
+        "VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING dataset_id",
+        (schema, table, row_count, col_hash, fingerprint, actor, note),
     )
-    return cur.fetchone()[0]
+    return DatasetRef(cur.fetchone()[0], "content" if fingerprint else "row_count", fingerprint, row_count, True)
 
 
 def log_audit(cur, actor, operation, dataset_id, script_ref, params, status, error_text=None):

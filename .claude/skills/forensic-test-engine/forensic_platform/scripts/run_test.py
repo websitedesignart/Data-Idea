@@ -371,7 +371,7 @@ def _execute(args) -> None:
             _refuse(cur, args, None, f"Table {args.schema}.{args.table} does not exist or is not visible to this role.")
             return
 
-        dataset_id = base.get_or_register_dataset(cur, args.schema, args.table, ACTOR)
+        dataset_id = base.resolve_dataset_version(cur, args.schema, args.table, ACTOR).dataset_id
 
         data_type = base.column_info(cur, args.schema, args.table, args.column)
         if data_type is None:

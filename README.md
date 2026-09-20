@@ -54,7 +54,10 @@ Each case gets its own PostgreSQL database with two schemas:
 - `_forensic`: `datasets`, `test_runs`, `findings`, `evidence_links` and `audit_log`. All are
   append-only except the reviewer fields on `findings`.
 
-Each source table gets a content fingerprint when it's imported. Every finding links to the
+A dataset **version** is the table's content fingerprint plus its column layout, so a finding
+always cites the data it was computed on: any edit, insert or delete makes a new version, and
+identical content reuses the old one. If the fingerprint can't be computed within the statement
+timeout, the run falls back to a weaker row-count basis and records that it did. Every finding links to the
 exact source rows behind it, identified by the table's declared primary key (composite keys
 work) or, for tables the engine imported, its `_row_no`. A table with neither is **refused**, so
 evidence is never linked to rows by guesswork. Findings are classified `OBSERVATION` or `ANOMALY` and nothing

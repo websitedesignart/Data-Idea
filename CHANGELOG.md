@@ -1,6 +1,26 @@
 # Changelog
 
 ## [Unreleased]
+- **Dataset versions are now defined by content, not row count.** Before, any table not imported
+  by our own Excel ingestion was versioned by row count alone: a table whose *values* changed but
+  whose row count did not was silently treated as the same dataset, so findings could cite a
+  version they were not computed on. A version is now the table's content fingerprint
+  (`s56:<rows>:<sum of SHA-256-based row hashes>`, computed in SQL) plus its column layout.
+  Unchanged content reuses the version, rewriting rows with identical content does not create a
+  new one (order-independent), any edit, insert or delete does, and returning to earlier content
+  maps back to the earlier version. The fingerprint is a change detector, not tamper-proofing.
+- If the fingerprint cannot be computed within the statement timeout, the run falls back to the
+  weaker row-count basis and **records that it did** (`table_hash` NULL and a note in
+  `datasets.notes`). It never claims a content-verified version it did not verify. Hashes
+  recorded by other algorithms (Excel ingestion's) are never trusted for reuse.
+- Sessions now pin `DateStyle`, `IntervalStyle`, `TimeZone` and `extra_float_digits`. Measured:
+  the same two rows gave four different fingerprints under different session settings, so
+  without this the same data could look changed. No schema migration.
+- Measured on real tables, read-only: all 12 tables of a real payroll-invoicing database fingerprint in 0.10 s in
+  total (largest, 7,234 rows, 64 ms), and a 64,096-row table in 0.2 s; every fingerprint was
+  repeatable.
+- New `tests_engine/test_dataset_version.py` (14 checks). Run against the previous engine, 8 of
+  them fail.
 - **Timeouts.** Every analysis session now has a statement timeout (default 60 s) and a lock
   timeout (default 5 s), so a runaway query is cancelled and a blocked one gives up. Set per
   session through connection options, so nothing in the database changes. Configure with
